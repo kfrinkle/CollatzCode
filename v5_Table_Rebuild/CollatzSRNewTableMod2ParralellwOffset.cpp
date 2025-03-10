@@ -852,9 +852,7 @@ TableBuildInfo updateTable(int** ColSeq, int* ColSeqSizes, int ColSteps, int num
 		int currentSteps = CollatzCompare(tempBin, sizes[startIndices[rank]+i], ColSeq, ColSteps, ColData, numsize, ColSeqSizes);
 
 		if(currentSteps != ColSteps){	
-			if(rank == 0) printf("First Trigger: x: %i, colSteps: %i\n", currentSteps, ColSteps);
-			 breakFound = 1;
-			 break;
+			dumpIndices.push(startIndices[rank]+i);
 		}
 	}
 
@@ -906,6 +904,18 @@ TableBuildInfo updateTable(int** ColSeq, int* ColSeqSizes, int ColSteps, int num
 			delete samples[i];
 		}
 		return tbInfos;
+	}
+
+	//prune breaking samples if any exist
+	while(!dumpIndices.empty()){
+		int dumpIndex = dumpIndices.top();
+
+		delete samples[dumpIndex];
+		samples.erase(samples.begin() + dumpIndex);
+		sizes.erase(sizes.begin() + dumpIndex);
+		frequencies.erase(frequencies.begin() + dumpIndex);
+
+		dumpIndices.pop();
 	}
 
 //START TABLE UPDATE

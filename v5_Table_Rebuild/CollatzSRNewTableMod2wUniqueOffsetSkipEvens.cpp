@@ -824,7 +824,7 @@ TableBuildInfo updateTable(int** ColSeq, int* ColSeqSizes, int ColSteps, int num
 		//int currentSteps = Collatz(tempBin, sizes[startIndices[rank]+i]);
 
 		if(currentSteps != ColSteps){	
-			 return tbInfos;
+			 dumpIndices.push(i);
 		}
 	}
 
@@ -865,6 +865,18 @@ TableBuildInfo updateTable(int** ColSeq, int* ColSeqSizes, int ColSteps, int num
 
 		//initialize ColSeq with the new sample
 		CollatzSteps(tempBin, startPower, ColSeq, ColSeqSizes);
+	}
+
+	//prune breaking samples if any exist
+	while(!dumpIndices.empty()){
+		int dumpIndex = dumpIndices.top();
+
+		delete samples[dumpIndex];
+		samples.erase(samples.begin() + dumpIndex);
+		sizes.erase(sizes.begin() + dumpIndex);
+		frequencies.erase(frequencies.begin() + dumpIndex);
+
+		dumpIndices.pop();
 	}
 
 //START TABLE UPDATE
