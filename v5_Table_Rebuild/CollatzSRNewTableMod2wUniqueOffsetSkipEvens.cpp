@@ -824,7 +824,7 @@ TableBuildInfo updateTable(int** ColSeq, int* ColSeqSizes, int ColSteps, int num
 		//int currentSteps = Collatz(tempBin, sizes[startIndices[rank]+i]);
 
 		if(currentSteps != ColSteps){	
-			 dumpIndices.push(i);
+			dumpIndices.push(i);
 		}
 	}
 

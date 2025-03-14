@@ -311,7 +311,7 @@ int main(int argc, char *argv[]){
 		for(int i = 0; i < testRange.power - powa; i++){
 			testRangeExpand *= 2;
 		}
-		testRangeExpand *= testRange.multiplier;
+		testRangeExpand *= (long long)testRange.multiplier;
 
 		//initial assignments
 		for (int i = 1; i < size; i++)
@@ -740,6 +740,7 @@ TableBuildInfo updateTable(int** ColSeq, int* ColSeqSizes, int ColSteps, int num
 	
 	vector<int> threshMConversion; //vector to hold the binary version of threshMultiplier
 	long spacing = 1; //spacing between samples
+	int numsOfBreaks[size] = {0};
 
 	//main variables to store sample info
 	vector<int*> samples; //stores the set of integers to sample for the table
@@ -902,6 +903,27 @@ TableBuildInfo updateTable(int** ColSeq, int* ColSeqSizes, int ColSteps, int num
 			delete samples[i];
 		}
 		return tbInfos;
+	}
+
+	//prune breaking samples
+	int sendBreaksize = dumpIndices.size();
+	MPI_Allgather(&sendBreaksize, 1, MPI_INT, numsOfBreaks, 1, MPI_INT, comm);
+	for(int i = 0; i < size; i++){
+		for(int j = 0; j < numsOfBreaks[i]; j++){
+			int dumpIndex = (rank == i)? dumpIndices.top() : 0;
+
+			MPI_Bcast(&dumpIndex, 1, MPI_INT, i, comm);
+
+			delete samples[dumpIndex];
+			samples.erase(samples.begin() + dumpIndex);
+			sizes.erase(sizes.begin() + dumpIndex);
+			frequencies.erase(frequencies.begin() + dumpIndex);
+
+			if(rank == i){
+				dumpIndices.pop();
+			}
+		}
+		numsOfBreaks[i] = 0;
 	}
 
 //START TABLE UPDATE

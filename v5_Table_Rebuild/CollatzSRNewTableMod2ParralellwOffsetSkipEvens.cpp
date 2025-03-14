@@ -764,6 +764,7 @@ TableBuildInfo updateTable(int** ColSeq, int* ColSeqSizes, int ColSteps, int num
 	//for mode searching
 	vector<int> searchIndices; //holds current indexes to search through
 	stack<int> dumpIndices; //holds indexes marked for deletion
+	int numsOfBreaks[size] = {0};
 
 	int maxFrequency = 0; //the highest frequency of a mode found
 	int modeIndex = 0; //the index of the highest frequency mode found
@@ -911,16 +912,24 @@ TableBuildInfo updateTable(int** ColSeq, int* ColSeqSizes, int ColSteps, int num
 		return tbInfos;
 	}
 
-	//prune breaking samples if any exist
-	while(!dumpIndices.empty()){
-		int dumpIndex = dumpIndices.top();
+	//prune breaking samples
+	int sendBreaksize = dumpIndices.size();
+	MPI_Allgather(&sendBreaksize, 1, MPI_INT, numsOfBreaks, 1, MPI_INT, comm);
+	for(int i = 0; i < size; i++){
+		for(int j = 0; j < numsOfBreaks[i]; j++){
+			int dumpIndex = (rank == i)? dumpIndices.top() : 0;
 
-		delete samples[dumpIndex];
-		samples.erase(samples.begin() + dumpIndex);
-		sizes.erase(sizes.begin() + dumpIndex);
-		frequencies.erase(frequencies.begin() + dumpIndex);
+			MPI_Bcast(&dumpIndex, 1, MPI_INT, i, comm);
 
-		dumpIndices.pop();
+			delete samples[dumpIndex];
+			samples.erase(samples.begin() + dumpIndex);
+			sizes.erase(sizes.begin() + dumpIndex);
+			frequencies.erase(frequencies.begin() + dumpIndex);
+
+			if(rank == i){
+				dumpIndices.pop();
+			}
+		}
 	}
 
 //START TABLE UPDATE
