@@ -923,7 +923,6 @@ TableBuildInfo updateTable(int** ColSeq, int* ColSeqSizes, int ColSteps, int num
 				dumpIndices.pop();
 			}
 		}
-		numsOfBreaks[i] = 0;
 	}
 
 //START TABLE UPDATE
