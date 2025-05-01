@@ -356,7 +356,7 @@ int main(int argc, char *argv[]){
         auto startTimerPZero = chrono::high_resolution_clock::now(); //start timer
 		long long threshold = 1LL; //number to check against to send rebuild table flag
 		int rebuildFlags[size] = {0}; //keeps track of flags sent
-		long long maxChunk = -1LL;
+		long long maxChunk = 0LL;
 
 		//initialize threshold
 		for(int i = 0; i < tableThresholdOffsets.size(); i++){
@@ -892,7 +892,7 @@ TableBuildInfo updateTable(unsigned long int** ColSeq, int* ColSeqSizes, int Col
 
 //CHECK HEIGHTS
 	//parallel version
-	if(SKIPEVENS){
+	if(PARALLEL_TABLES){
 		//distribution of ranges for each node to check
 		int assignedSize = samples.size() / size;
 		int extra = samples.size() % size;
