@@ -587,7 +587,7 @@ int main(int argc, char *argv[]){
 					{
 						sizeNum = add64b1(num64hold, sizeNum);
 
-						if(SKIPEVENS && (num64hold[0] % 2UL) == 0 && i != powa2 - 2){
+						if(SKIPEVENS && (num64hold[0] & 1UL) == 0 && i != powa2 - 2){
 							sizeNum = add64b1(num64hold, sizeNum);
 							streakChunk++;
 							i++;
@@ -1108,11 +1108,11 @@ TableBuildInfo updateTable(unsigned long int** ColSeq, int* ColSeqSizes, int Col
 */
 int Collatz(unsigned long int num64[], int size){
 	int steps = 0; // just keep track of the number of steps!
-	while (! (( size == 0) && (num64[0] == 1)) ){
+	while (! (( size == 0) && (num64[0] == 1UL)) ){
         steps++;
 
         // if number odd, perform 3x+1
-         if (num64[0] & 1){
+         if (num64[0] & 1UL){
 			
             size = mul64b3(num64, size);
 			
