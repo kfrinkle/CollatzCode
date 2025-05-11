@@ -969,7 +969,7 @@ TableBuildInfo updateTable(unsigned long int** ColSeq, int* ColSeqSizes, int Col
 	}
 
 // REINITIALIZE COLSEQ with (2^startPower + threshMultiplier(2^thresholdPower) + 1)
-	if (threshMultiplier > 0 && breakFound != 1){
+	if (threshMultiplier > 0){
 		//make sure temp bin is reset
 		for(int i = 0; i < numsize; i++){
 			tempBin[i] = 0UL;
