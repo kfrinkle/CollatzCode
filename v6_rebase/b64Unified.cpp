@@ -887,7 +887,7 @@ TableBuildInfo updateTable(unsigned long int** ColSeq, int* ColSeqSizes, int Col
 			}
 		}
 		
-		samples[i].size = addUL64(samples[i].num64, (unsigned long int)(spacing * (long long int)(i + 1)) + intervalOffsets[i], samples[i].size);
+		samples[i].size = addUL64(samples[i].num64, (unsigned long int)(spacing * (long long int)(i + 1) + intervalOffsets[i]), samples[i].size);
 	}
 
 //CHECK HEIGHTS
