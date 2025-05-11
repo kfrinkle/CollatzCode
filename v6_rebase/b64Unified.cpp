@@ -935,8 +935,11 @@ TableBuildInfo updateTable(unsigned long int** ColSeq, int* ColSeqSizes, int Col
 
 		for(int i = 0; i < size; i++){
 			for(int j = 0; j < breakFlags[i]; j++){
-				int tempIndex = breakIndices.top();
-				breakIndices.pop();
+				int tempIndex = 0;
+				if(rank == i){
+					tempIndex = breakIndices.top();
+					breakIndices.pop();
+				}
 				MPI_Bcast(&tempIndex, 1, MPI_INT, i, comm);
 				dumpIndices.push(tempIndex);
 			}
