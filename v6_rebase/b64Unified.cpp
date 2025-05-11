@@ -780,8 +780,7 @@ int main(int argc, char *argv[]){
  * @param numsize size of the num64s
  * @param startPower power of the start of the range
  * @param initialOffsets initial offsets
- * @param numberOfOffsets number of initial offsets
- * @param thresholdPower power of the size of the sample range
+ * @param tableThresholdOffsets offsets for the domain of the table build
  * @param threshMultiplier which range of samples you are at
  * @param amountOfSamples number of integers to sample for the table
  * @param comm the comminicator for the work group using MPI_Split, rank 0 should never enter this function
