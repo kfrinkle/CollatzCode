@@ -29,10 +29,11 @@
 // TO RUN THIS CODE, here is an example....
 // sbatch jobfile.mpi 3935 10 30000 4096 30 2 2[65] ... 
 // the above command submits the job where the run command in the job file would look like:
-// time prun ./executable $1 $2 $3 $4 $5 ... $n
+// time prun ./executable $1 $2 $3 $4 $5 $6 ($7 -> $n)
 // the example says to test 2^3935 where each process checks chunks of numbers 2^10 long, and add 30000 extra padding to
 // the front of the array that holds the binary number.  We always set this close to the height of 2^k, in general.
 // Then you would build the table taking 4096 samples in a range up to 2^k + 2^30, builing a new table at 2^30.
+// after that is the total numbers you want to search through in a power of 2 and a multiplier in the form x[y] with x being the multiplier and y being the power of 2
 // after that are offsets of powers of 2, either by themselves or with a multiplier in the form x[y]
 // definitely overkill...
 
@@ -52,6 +53,7 @@
 #include <stack>
 #include <string>
 #include <random>
+#include <algorithm>
 
 using namespace std;
 
@@ -106,7 +108,7 @@ int Collatz(int binnumber[], int binsize); // generate Collatz sequence for bina
 void CollatzSteps(int num[], int sizeNum, int **ColSeq, int ColSeqSizes[]); // generate Collatz sequence, save the values along the way in 2D array
 int CollatzCompare(int num[], int sizeNum, int **ColSeq, int steps, int CoalData[], int BinExtra, int ColSeqSizes[]); // generate Collatz sequence, compare the values along the way
 InitialOffset parseInitalOffset(char* carr);
-TableBuildInfo updateTable(int** ColSeq, int* ColSeqSizes, int ColSteps, int numsize, int startPower, InitialOffset* initialOffsets,int initOffsetSize, int thresholdPower, int threshMultiplier, int amountOfSamples); //self explanatory
+TableBuildInfo updateTable(int** ColSeq, int* ColSeqSizes, int ColSteps, int numsize, int startPower, InitialOffset* initialOffsets,int initOffsetSize, int thresholdPower, int threshMultiplier, int amountOfSamples, MPI_Comm comm); //self explanatory
 
 /*DEPRECATED*/
 //int bincompare(int num1[], int num2[], int size, int lsd); // used to compare two binary numbers
@@ -133,7 +135,8 @@ int main(int argc, char *argv[]){
 	int extra = atoi(argv[3]); // how much padding to add to left end of number -- CHANGE IN COLLATZ FUNCTION TO MATCH
 	int tableSampleAmount = atoi(argv[4]); //number of integers to build the table with
 	int thresholdPower = atoi(argv[5]); //distance between the numbers to build the table with
-	InitialOffset initialOffsets[argc-6]; //offsets
+	InitialOffset testRange = parseInitalOffset(argv[6]);
+	InitialOffset initialOffsets[argc-7]; //offsets
 
 //COMMUNICATION
     MPI::Init(argc, argv);
@@ -144,6 +147,11 @@ int main(int argc, char *argv[]){
 	char processorName[MPI_MAX_PROCESSOR_NAME];  // create character array for the names of the compute nodes
 	int processorNamelength = 0; // used for printing out the name of the compute node
     MPI::Get_processor_name(processorName, processorNamelength);
+
+	//make a group for just the workers
+	int color = (rank > 0) ? 1 : 0;
+	MPI_Comm workCommunicator;
+	MPI_Comm_split(MPI_COMM_WORLD, color, rank, &workCommunicator);
 
 //MAIN VARIABLES
 	unsigned int powa2 = 1; // power of 2 value in base 10 (for each node to work on, should be less than INT MAX)
@@ -167,11 +175,11 @@ int main(int argc, char *argv[]){
 
 	//RANK 0 COMMUNICATOR VARIABLES
 		long long chunkCount = 0; //keeps track of current chunk, starts at 0
+		long long testRangeExpand = 1;
 		long long chunks[size]; //stores chunk assignemnts, index = rank of work node assigned chunk
 		int chunkSizes[size]; //chunk sizes returned by work nodes
 		int chunkCounts[size]; //gather for local chunk counts
-		int breakCount = 0; //keeps track of the amount of breaks found
-		BreakInfo* bInfos; //stores info of the breaks in BreakInfo structs
+		vector<BreakInfo> bInfos; //stores info of the breaks in BreakInfo structs
 
 		//printing
 		long minTimes[size]; //gather for local min times
@@ -198,20 +206,20 @@ int main(int argc, char *argv[]){
 //INITIALIZAITION
 
 	//initialize initial offsets
-	for(int i = 0; i < argc - 6; i++){
-		initialOffsets[i] = parseInitalOffset(argv[6+i]);
+	for(int i = 0; i < argc - 7; i++){
+		initialOffsets[i] = parseInitalOffset(argv[7+i]);
 		//abort if there is an arguement error
 		if (initialOffsets[i].power == -1) return 1;
 	}
 
 	//init powa2
-	for (int i = 1; i <= powa; i++){
+	for (int i = 0; i < powa; i++){
 		powa2 = powa2*2;
 	}
 
 	//init binnumbers
 	binnumberHold[sizeNum-1] = 1;//Set the leading value in the array to 1 so we have 2^k
-	binnumberHold[0] = 1;//Set the 0th place to 1 so we all have 2^k+1 now
+	binnumberHold[0] = 1;//Set the 0th place to 1 so we all have 2^k+1 now.
 
 	//apply initial offsets
 	for(int i = 0; i < argc - 6; i++){
@@ -259,7 +267,7 @@ int main(int argc, char *argv[]){
 		//initialize ColSeq on Worknodes
 		if (rank > 0){
 			CollatzSteps(binnumber, sizeNum, ColSeq, ColSeqSizes);
-			tbInfos = updateTable(ColSeq, ColSeqSizes, ColSteps, sizeNum + extra, sizeNum, initialOffsets, argc-6, thresholdPower, 0, tableSampleAmount);
+			tbInfos = updateTable(ColSeq, ColSeqSizes, ColSteps, sizeNum + extra, sizeNum, initialOffsets, argc-6, thresholdPower, 0, tableSampleAmount, workCommunicator);
 		}
 
 //END INITIALIZATION
@@ -298,10 +306,16 @@ int main(int argc, char *argv[]){
 		for(int i = 0; i < thresholdPower - powa; i++){
 			threshold *= 2;
 		}
+		
+		//initialize testRange
+		for(int i = 0; i < testRange.power - powa; i++){
+			testRangeExpand *= 2;
+		}
+		testRangeExpand *= (long long)testRange.multiplier;
 
 		//initial assignments
 		for (int i = 1; i < size; i++)
-		{
+		{	
 			//record chunk assignment
 			chunks[i] = chunkCount++;
 			//printf("Rank %i receives chunk %i\n", i, chunkCount - 1);
@@ -314,6 +328,7 @@ int main(int argc, char *argv[]){
 
 		//work loop
 		while(kg){
+			
 			int chunkSize; //collection variable received
 			MPI_Recv(&chunkSize, 1, MPI_INT, MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, &status);
 			int sender = status.MPI_SOURCE; //rank received from
@@ -322,33 +337,34 @@ int main(int argc, char *argv[]){
 
 			//condition to find a break
 			if (chunkSize < powa2){
-				breakCount++;
-				kg = false;
-				binnumberHold[0] = 2; //binHold is flipped to two as a stop signal
+				//binnumberHold[0] = 2; //binHold is flipped to two as a stop signal
+				bInfos.push_back({sender, chunks[sender], chunkSizes[sender]});
 				printf("Rank %i breaks with a chunk size of %i in chunk %i\n", sender, chunkSizes[sender], chunks[sender]);
 			}
 
 			//keep going if a break isnt found, assigning the sender more work
-			else{
 
+			chunks[sender] = chunkCount++;
+			//printf("Rank %i receives chunk %i\n", sender, chunkCount - 1);
 
-				chunks[sender] = chunkCount++;
-				//printf("Rank %i receives chunk %i\n", sender, chunkCount - 1);
-
-				//if threshold is met, ready flags for rebuild
-				if((chunkCount)%threshold == 0){
-					printf("Flag Triggered!\n");
-					for(int i = 0; i < size; i++){
-						rebuildFlags[i]++;
-					}
+			//if threshold is met, ready flags for rebuild
+			if((chunkCount)%threshold == 0){
+				printf("Flag Triggered!\n");
+				for(int i = 0; i < size; i++){
+					rebuildFlags[i]++;
 				}
+			}
 
-				//if a flag is waiting, send it
-				if(rebuildFlags[sender] != 0){
-					//printf("Sent flag to rank %i.\n", sender);
-					binnumberHold[sizeNum+extra - 1] = rebuildFlags[sender];
-					rebuildFlags[sender] = 0;
-				}
+			//if a flag is waiting, send it
+			if(rebuildFlags[sender] != 0){
+				//printf("Sent flag to rank %i.\n", sender);
+				binnumberHold[sizeNum+extra - 1] = rebuildFlags[sender];
+				rebuildFlags[sender] = 0;
+			}
+
+			if(chunkCount == testRangeExpand){
+				binnumberHold[0] = 2;
+				kg = false;
 			}
 
 			//send either more work or kill command to the sender
@@ -391,39 +407,12 @@ int main(int argc, char *argv[]){
 
 			//keeps track if any more breaks are found
 			if (chunkSize < powa2){
-				breakCount++;
+				bInfos.push_back({sender, chunks[sender], chunkSizes[sender]});
 				printf("Rank %i breaks with a chunk size of %i in chunk %i\n", sender, chunkSizes[sender], chunks[sender]);
 			}
 
 			//send kill command
 			MPI_Send(binnumberHold, sizeNum, MPI_INT, sender, 0, MPI_COMM_WORLD);
-		}
-
-		bInfos = new BreakInfo[breakCount]; //initialize bInfos with number of breaks found
-
-		//search for and record information about the breaks in ascending order in bInfos
-		for (int i = 0; i < breakCount; i++){
-
-			long long minChunk = LLONG_MAX; // to keep track of the earliest assigned chunk
-			int minRank = 0; //keeps track of the rank of said chunk
-
-			//goes through and finds the earliest found break, recoring the rank and the chunk number
-			for (int j = 1; j < size; j++){
-				if (chunkSizes[j] != powa2 && chunks[j] < minChunk){
-						minRank = j;
-						minChunk = chunks[j];
-				}
-			}
-
-			//stores break information in bInfos
-			if (minRank > 0){
-				bInfos[i].rank = minRank;
-				bInfos[i].chunk = minChunk;
-				bInfos[i].chunkSize = chunkSizes[minRank];
-
-				//set the chunkSize to powa2 so it isnt recorded again
-				chunkSizes[minRank] = powa2;
-			}
 		}
 	}
 
@@ -434,7 +423,6 @@ int main(int argc, char *argv[]){
 	//return how many numbers have been checked in the chunk
 	if (rank > 0){
 
-		bInfos = nullptr; //for clean deletion
 		iter = 0; //keeps track of the chunks this node has processed
 		int thresholdsReached = 0;
 
@@ -446,9 +434,9 @@ int main(int argc, char *argv[]){
 			int streakChunk = 0; //keep track of steps through the assigned range
 
 			//rebuild ColSeq lookup table if the flag is received from rank 0
-			if (binnumberHold[sizeNum+extra - 1] != 0){
+			if (binnumberHold[0] != 2 && binnumberHold[sizeNum+extra - 1] != 0){
 				thresholdsReached += binnumberHold[sizeNum + extra - 1];
-				tbInfos = updateTable(ColSeq, ColSeqSizes, ColSteps, sizeNum + extra, sizeNum, initialOffsets, argc - 6, thresholdPower, thresholdsReached, tableSampleAmount);
+				tbInfos = updateTable(ColSeq, ColSeqSizes, ColSteps, sizeNum + extra, sizeNum, initialOffsets, argc - 6, thresholdPower, thresholdsReached, tableSampleAmount, workCommunicator);
 				if(rank == 1){
 					printTableInfo(tbInfos);
 				}
@@ -469,8 +457,7 @@ int main(int argc, char *argv[]){
 				}
 
 				//Now we have each process go through their chunk of the range to check!  Not for loop goes from 0 to powa2-1
-				for (int i = 0; i < powa2; i++)
-				{
+				for (int i = 0; i < powa2; i++){
 
 					// store the value of steps in the CollatzCompare function
 					// remember CollatzCompare compares the numbers at each step in the sequence to that of 2^k+1
@@ -559,13 +546,20 @@ int main(int argc, char *argv[]){
 	//Node 0 Prints Results
 	if (rank == 0){
 
+		//sort bInfos in order by chunk
+		sort(bInfos.begin(), bInfos.end(), [] (BreakInfo const& a, BreakInfo const& b) { return a.chunk < b.chunk; });
+		
 		//find biggest streak
-		long long int biggestStreak = (long long int)(bInfos[0].chunk) * (long long int) powa2 + (long long int) bInfos[0].chunkSize;
+		long long int biggestStreak = 0;
 
-		for (int i = 1; i < breakCount; i++){
-			long long int currentStreak = (long long int)((bInfos[i].chunk * powa2) + (long long int) bInfos[i].chunkSize) - (( (long long int) bInfos[i - 1].chunk * (long long int) powa2) + (long long int) bInfos[i -1].chunkSize);
+		if(bInfos.size() > 0){
+			biggestStreak = (long long int)(bInfos[0].chunk) * (long long int) powa2 + (long long int) bInfos[0].chunkSize;
 
-			if (currentStreak > biggestStreak) biggestStreak = currentStreak;
+			for (int i = 1; i < bInfos.size(); i++){
+				long long int currentStreak = (long long int)((bInfos[i].chunk * powa2) + (long long int) bInfos[i].chunkSize) - (( (long long int) bInfos[i - 1].chunk * (long long int) powa2) + (long long int) bInfos[i -1].chunkSize);
+
+				if (currentStreak > biggestStreak) biggestStreak = currentStreak;
+			}
 		}
 
 		//find average min and max times
@@ -611,17 +605,21 @@ int main(int argc, char *argv[]){
 		printf("\n");
 
 		//print out found breaks
-		for (int i = 0; i < breakCount; i++){
+		for (int i = 0; i < bInfos.size(); i++){
 			cout << "Node " << processorName << " -- Rank " << rank << ": A break was found by rank " << bInfos[i].rank << " at " << (long long int)(bInfos[i].chunk) * (long long int) powa2 + (long long int) bInfos[i].chunkSize << " in chunk " << bInfos[i].chunk << "\n";
 		}
 
-
 		// print out all the userful info here!  Hopefully we do not have currun == size*powa2
-		cout << "Node " << processorName <<  " -- Rank " << rank << ":  Numbers start at (2^" << sizeNum - 1 << ")";
-		for(int i = 0; i < argc - 6; i++){
-			printf(" + %i(2^%i)", initialOffsets[i].multiplier, initialOffsets[i].power);
+		if(biggestStreak > 0){
+			cout << "Node " << processorName <<  " -- Rank " << rank << ":  Numbers start at (2^" << sizeNum - 1 << ")";
+			for(int i = 0; i < argc - 7; i++){
+				printf(" + %i(2^%i)", initialOffsets[i].multiplier, initialOffsets[i].power);
+			}
+			cout << " + 1 with the biggest streak being " << biggestStreak << " long. Range spanned "  << (long long int) (chunkCount)*powa2 << " numbers" << "\n";
 		}
-		cout << " + 1 with the biggest streak being " << biggestStreak << " long. Range spanned "  << (long long int) (chunkCount)*powa2 << " numbers" << "\n";
+		else{
+			cout << "No break was found!\n";
+		}
 
 		// now the fun stats!
 		cout << "Node " << processorName <<  " -- Rank " << rank << ": Shortest coalescence value is :  " << ColMinReduce << "\n";
@@ -649,7 +647,6 @@ int main(int argc, char *argv[]){
 	delete[] binnumberHold;
 	delete[] ColData;
 	delete[] ColSeqSizes;
-	delete[] bInfos;
 
 	// now to free that pesky 2D array!
 	free(ColSeq[0]);
@@ -717,16 +714,25 @@ int addDecToBin(int bin[], long decimal, int binSize){
  * @param ColSteps number of steps in the sequence
  * @param numsize size of the binnumbers
  * @param startPower power of the start of the range
- * @param intialOffsets array holding the offsets
- * @param initOffsetSize size of the offset array
+ * @param initialOffsets array holding the powers of 2 to add to the samples
+ * @param initOffsetSize size of initialOffsets array
  * @param thresholdPower power of the size of the sample range
  * @param threshMultiplier which range of samples you are at
  * @param amountOfSamples number of integers to sample for the table
+ * @param comm the comminicator for the work group using MPI_Split, rank 0 should never enter this function
  * @returns TableBuildInfo struct, will be all 0s if the table build fails
 */
-TableBuildInfo updateTable(int** ColSeq, int* ColSeqSizes, int ColSteps, int numsize, int startPower, InitialOffset* initialOffsets,int initOffsetSize, int thresholdPower, int threshMultiplier, int amountOfSamples){
+TableBuildInfo updateTable(int** ColSeq, int* ColSeqSizes, int ColSteps, int numsize, int startPower, InitialOffset* initialOffsets, int initOffsetSize, int thresholdPower, int threshMultiplier, int amountOfSamples, MPI_Comm comm){
 	
 //VARIABLES
+	//group MPI info
+	int rank = 0; //local rank
+	int size = 0; //local groupsize
+	MPI_Comm_rank(comm, &rank);
+	MPI_Comm_size(comm, &size);
+	int breakFound;
+	int breakFlag;
+	
 	vector<int> threshMConversion; //vector to hold the binary version of threshMultiplier
 	long spacing = 1; //spacing between samples
 
@@ -746,6 +752,7 @@ TableBuildInfo updateTable(int** ColSeq, int* ColSeqSizes, int ColSteps, int num
 	//for mode searching
 	vector<int> searchIndices; //holds current indexes to search through
 	stack<int> dumpIndices; //holds indexes marked for deletion
+	int numsOfBreaks[size] = {0};
 
 	int maxFrequency = 0; //the highest frequency of a mode found
 	int modeIndex = 0; //the index of the highest frequency mode found
@@ -805,22 +812,42 @@ TableBuildInfo updateTable(int** ColSeq, int* ColSeqSizes, int ColSteps, int num
 		sizes[i] = addDecToBin(samples[i], (spacing * (long)(i + 1)) + offsets[i], sizes[i]);
 	}
 
+
 //CHECK HEIGHTS
+	//distribution of ranges for each node to check
+	int assignedSize = samples.size() / size;
+	int extra = samples.size() % size;
+	int assignedSizes[size] = {0};
+	int startIndices[size] = {0};
+
+	for(int i = 0; i < size; i++){
+		assignedSizes[i] = assignedSize;
+	}
+
+	for(int i = 0; i < extra; i++){
+		assignedSizes[i]++;
+	}
+
+	int runningTotal = 0;
+	for(int i = 1; i < size; i++){
+		runningTotal += assignedSizes[i-1];
+		startIndices[i] = runningTotal;
+	}
 
 	//check heights for break, different ranks check their assigned range
-	for(int i = 0; i < amountOfSamples; i++){
+	for(int i = 0; i < assignedSizes[rank]; i++){
 			
 		//array copy because Collatz() is destructive
-		for(int j = 0; j < sizes[i]; j++){
-			tempBin[j] = samples[i][j];
+		for(int j = 0; j < sizes[startIndices[rank] + i]; j++){
+			tempBin[j] = samples[startIndices[rank] + i][j];
 		}
-
-		int ColData[3] = {0, ColSteps, 0}; //dummy
-		int currentSteps = CollatzCompare(tempBin, sizes[i], ColSeq, ColSteps, ColData, numsize, ColSeqSizes);
-		//int currentSteps = Collatz(tempBin, sizes[startIndices[rank]+i]);
+		
+		int ColData[3] = {0, ColSteps, 0};
+		int currentSteps = CollatzCompare(tempBin, sizes[startIndices[rank]+i], ColSeq, ColSteps, ColData, numsize, ColSeqSizes);
 
 		if(currentSteps != ColSteps){	
-			dumpIndices.push(i);
+			if(rank == 0) printf("First Trigger: x: %i, colSteps: %i\n", currentSteps, ColSteps);
+			 dumpIndices.push(startIndices[rank]+i);
 		}
 	}
 
@@ -852,27 +879,48 @@ TableBuildInfo updateTable(int** ColSeq, int* ColSeqSizes, int ColSteps, int num
 		
 		int ColData[3] = {0, ColSteps, 0}; //dummy
 		int currentSteps = CollatzCompare(tempTempBin, startPower, ColSeq, ColSteps, ColData, numsize, ColSeqSizes);
-		//int currentSteps = Collatz(tempTempBin, startPower);
+
 		//abort if the initializing number breaks the streak
 		if( currentSteps != ColSteps){
 			//printf("Second Trigger: x: %i, colSteps: %i\n", currentSteps, ColSteps);
-			return tbInfos; //ABORT
+			breakFound = 1;
 		}
 
 		//initialize ColSeq with the new sample
-		CollatzSteps(tempBin, startPower, ColSeq, ColSeqSizes);
+		else CollatzSteps(tempBin, startPower, ColSeq, ColSeqSizes);
 	}
 
-	//prune breaking samples if any exist
-	while(!dumpIndices.empty()){
-		int dumpIndex = dumpIndices.top();
+	//communicate if a break is found
+	MPI_Allreduce(&breakFound, &breakFlag, 1, MPI_INT, MPI_BOR, comm);
 
-		delete[] samples[dumpIndex];
-		samples.erase(samples.begin() + dumpIndex);
-		sizes.erase(sizes.begin() + dumpIndex);
-		frequencies.erase(frequencies.begin() + dumpIndex);
+	//prune breaking samples
+	int sendBreaksize = dumpIndices.size();
+	MPI_Allgather(&sendBreaksize, 1, MPI_INT, numsOfBreaks, 1, MPI_INT, comm);
+	for(int i = 0; i < size; i++){
+		for(int j = 0; j < numsOfBreaks[i]; j++){
+			int dumpIndex = (rank == i)? dumpIndices.top() : 0;
 
-		dumpIndices.pop();
+			MPI_Bcast(&dumpIndex, 1, MPI_INT, i, comm);
+
+			delete[] samples[dumpIndex];
+			samples.erase(samples.begin() + dumpIndex);
+			sizes.erase(sizes.begin() + dumpIndex);
+			frequencies.erase(frequencies.begin() + dumpIndex);
+
+			if(rank == i){
+				dumpIndices.pop();
+			}
+		}
+		numsOfBreaks[i] = 0;
+	}
+
+
+	//handle a break and ABORT if there is one
+	if(breakFlag){
+		for(int i = 0; i < samples.size(); i++){
+			delete[] samples[i];
+		}
+		return tbInfos;
 	}
 
 //START TABLE UPDATE

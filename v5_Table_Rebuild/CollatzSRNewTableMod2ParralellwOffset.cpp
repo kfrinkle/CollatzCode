@@ -759,6 +759,7 @@ TableBuildInfo updateTable(int** ColSeq, int* ColSeqSizes, int ColSteps, int num
 	//for mode searching
 	vector<int> searchIndices; //holds current indexes to search through
 	stack<int> dumpIndices; //holds indexes marked for deletion
+	int numsOfBreaks[size] = {0};
 
 	int maxFrequency = 0; //the highest frequency of a mode found
 	int modeIndex = 0; //the index of the highest frequency mode found
@@ -852,9 +853,7 @@ TableBuildInfo updateTable(int** ColSeq, int* ColSeqSizes, int ColSteps, int num
 		int currentSteps = CollatzCompare(tempBin, sizes[startIndices[rank]+i], ColSeq, ColSteps, ColData, numsize, ColSeqSizes);
 
 		if(currentSteps != ColSteps){	
-			if(rank == 0) printf("First Trigger: x: %i, colSteps: %i\n", currentSteps, ColSteps);
-			 breakFound = 1;
-			 break;
+			dumpIndices.push(startIndices[rank]+i);
 		}
 	}
 
@@ -903,9 +902,30 @@ TableBuildInfo updateTable(int** ColSeq, int* ColSeqSizes, int ColSteps, int num
 	//handle a break and ABORT if there is one
 	if(breakFlag){
 		for(int i = 0; i < samples.size(); i++){
-			delete samples[i];
+			delete[] samples[i];
 		}
 		return tbInfos;
+	}
+
+	//prune breaking samples
+	int sendBreaksize = dumpIndices.size();
+	MPI_Allgather(&sendBreaksize, 1, MPI_INT, numsOfBreaks, 1, MPI_INT, comm);
+	for(int i = 0; i < size; i++){
+		for(int j = 0; j < numsOfBreaks[i]; j++){
+			int dumpIndex = (rank == i)? dumpIndices.top() : 0;
+
+			MPI_Bcast(&dumpIndex, 1, MPI_INT, i, comm);
+
+			delete[] samples[dumpIndex];
+			samples.erase(samples.begin() + dumpIndex);
+			sizes.erase(sizes.begin() + dumpIndex);
+			frequencies.erase(frequencies.begin() + dumpIndex);
+
+			if(rank == i){
+				dumpIndices.pop();
+			}
+		}
+		numsOfBreaks[i] = 0;
 	}
 
 //START TABLE UPDATE
@@ -989,7 +1009,7 @@ TableBuildInfo updateTable(int** ColSeq, int* ColSeqSizes, int ColSteps, int num
 			while(!dumpIndices.empty()){
 				int dumpIndex = dumpIndices.top();
 
-				delete samples[dumpIndex];
+				delete[] samples[dumpIndex];
 				samples.erase(samples.begin() + dumpIndex);
 				sizes.erase(sizes.begin() + dumpIndex);
 				frequencies.erase(frequencies.begin() + dumpIndex);
@@ -1007,7 +1027,7 @@ TableBuildInfo updateTable(int** ColSeq, int* ColSeqSizes, int ColSteps, int num
 	}
 	//cleanup
 	for(int i = 0; i < samples.size(); i++){
-		delete samples[i];
+		delete[] samples[i];
 	}
 
 	//record elapsed build time in tbInfos
@@ -1399,8 +1419,8 @@ InitialOffset parseInitalOffset(char* carr){
 		offset = {1, atoi(carr)};
 	}
 
-	delete multC;
-	delete powC;
+	delete[] multC;
+	delete[] powC;
 
 	return offset;
 }

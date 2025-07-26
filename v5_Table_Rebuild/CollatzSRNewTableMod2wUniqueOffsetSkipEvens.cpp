@@ -824,7 +824,7 @@ TableBuildInfo updateTable(int** ColSeq, int* ColSeqSizes, int ColSteps, int num
 		//int currentSteps = Collatz(tempBin, sizes[startIndices[rank]+i]);
 
 		if(currentSteps != ColSteps){	
-			 return tbInfos;
+			dumpIndices.push(i);
 		}
 	}
 
@@ -865,6 +865,18 @@ TableBuildInfo updateTable(int** ColSeq, int* ColSeqSizes, int ColSteps, int num
 
 		//initialize ColSeq with the new sample
 		CollatzSteps(tempBin, startPower, ColSeq, ColSeqSizes);
+	}
+
+	//prune breaking samples if any exist
+	while(!dumpIndices.empty()){
+		int dumpIndex = dumpIndices.top();
+
+		delete[] samples[dumpIndex];
+		samples.erase(samples.begin() + dumpIndex);
+		sizes.erase(sizes.begin() + dumpIndex);
+		frequencies.erase(frequencies.begin() + dumpIndex);
+
+		dumpIndices.pop();
 	}
 
 //START TABLE UPDATE
@@ -948,7 +960,7 @@ TableBuildInfo updateTable(int** ColSeq, int* ColSeqSizes, int ColSteps, int num
 			while(!dumpIndices.empty()){
 				int dumpIndex = dumpIndices.top();
 
-				delete samples[dumpIndex];
+				delete[] samples[dumpIndex];
 				samples.erase(samples.begin() + dumpIndex);
 				sizes.erase(sizes.begin() + dumpIndex);
 				frequencies.erase(frequencies.begin() + dumpIndex);
@@ -966,7 +978,7 @@ TableBuildInfo updateTable(int** ColSeq, int* ColSeqSizes, int ColSteps, int num
 	}
 	//cleanup
 	for(int i = 0; i < samples.size(); i++){
-		delete samples[i];
+		delete[] samples[i];
 	}
 
 	//record elapsed build time in tbInfos
@@ -1358,8 +1370,8 @@ InitialOffset parseInitalOffset(char* carr){
 		offset = {1, atoi(carr)};
 	}
 
-	delete multC;
-	delete powC;
+	delete[] multC;
+	delete[] powC;
 
 	return offset;
 }
