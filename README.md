@@ -2,6 +2,7 @@
 This is where all code related to the Collatz Conjecture will be located, what follows are the descriptions.
 
 v1-v3_Legacy has old base 2 code in it:
+
 CollatzMPIOneStreakCheckV4b.cpp -- the original Collatz streak computing code, no bells and whistles.
 FastestOne.cpp -- the modified code that introduces lookup tables and other shortcuts.
 LinearArrayExtra2DCleanBB.cpp -- even more modified to increase performance.
