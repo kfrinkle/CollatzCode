@@ -1,6 +1,8 @@
 # CollatzCode
 This is where all code related to the Collatz Conjecture will be located, what follows are the descriptions.
 
+_Compare -- contains versions of code used to compare runtimes for specific exponents, see readme for link to data set in the folder
+
 v1-v3_Legacy -- has base 2 legacy code, three evolutionary versions.
 
 v4_Async -- better performance after desyncing the work nodes and giving them smaller intervals to check, marching along the numberline
