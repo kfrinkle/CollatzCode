@@ -13,4 +13,4 @@ v6_rebase -- changed from base 2 stored in 32bit integer types to base 64 stored
 
 v7_jumbler -- implemented a runningSample to improve coalesence, Jumblerv2 is currently fastest running code.
 
-v8_BloomFilter -- Bloom Filter attempts.  Base 2 is currently working, base 2^64 still needs some love.
+v8_BloomFilter -- Bloom Filter attempts.  Base 2 is currently working, base 2^64 is still experiencing some random issues, including missed streak breaks.
