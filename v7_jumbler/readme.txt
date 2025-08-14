@@ -1,0 +1,2 @@
+In this folder is the fastest (2025.08.14) streak verification code to date, it is base 2^64, has the capability to generate the modified lookup table in parallel, has table build and offset command line options, and much more.
+The ..noOffset... version does not use random samples, but the evenly spaced samples to modify the table.  This normally results in greater average coalescence values, so should not normally be used.
