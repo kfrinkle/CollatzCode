@@ -1,33 +1,3 @@
-// 2023.02.25 -- both divide by 2 and multply by three and add 1 functions appear to be working
-// 2023.02.27 -- created the compare function for binary numbers to determine if we have a new max
-// to run the slurm version, add a command line integer for number of digits to generate
-// 2023.03.09 -- data aligns with Mike's data collection, commented out majority of print statements
-// 2023.03.15 -- started adding in the MPI functionality.
-// 2023.03.16 -- moved entire Collatz process to its own function!
-// 2023.03.19 -- created timers for functions to figure out what is taking up what time
-// 2023.03.22 -- fixed counting the 0th entry twice and not counting the last entry at all
-
-// 2023.03.24 -- The program has been modified to check for longest runs over a range
-// 2023.04.01 -- This program will allow a large number of processes to compute a single long streak
-
-// 2023.06.21 -- Start new approach where we store all values in Collatz Sequence
-// 2023.06.21 -- got away from storing ALL steps in sequence
-
-// 2023.07.04 -- added depth of coalescence statistics to code
-// 2023.09.22 -- added a frackton of comments
-// 2023.09.27 -- fixed small issue with comparing in the CollatzCompare function
-// 2023.10.13 -- Modified the code to compare the size of the numbers first before comparing bit-by-bit
-
-// 2023.11.15 -- implemented linear array approach so that divide by 2 jut shifts lsd up, no circular array used
-// a third argument is now required, which should be larger than the Collatz sequence height of base number
-
-// SR 2024.11.3 -- implemented a new job structure, having rank 0 dispense work to all the other ranks and keep track of data
-//	right now it stops after the first break is found, but could be modified to keep going
-
-// SR 2025.2.15 -- implemented a functionality to update the lookup table, sampling a range within a threshold
-
-// SR 2025.4.9 -- converted the binnumber to num64, changing the base from binary to b2^64.
-
 // TO RUN THIS CODE, here is an example.... there are three command line arguments
 // sbatch jobfile.mpi 3935 10 4096 t31 t2 o2[3] r3[31] skip ptable
 // the above command submits the job where the run command in the job file would look like:
@@ -110,7 +80,11 @@ void printnum(int num[], int size); // print out number in correct order
 void printTableInfo(TableBuildInfo tbInfo); //special print for table build abortion
 int Collatz(unsigned long int num64[], int sizeNum); // generate Collatz sequence for num64 of length size
 void CollatzSteps(unsigned long int num64[], int sizeNum, unsigned long int **ColSeq, int ColSeqSizes[]); // generate Collatz sequence, save the values along the way in 2D array
+//++++++++  added new function for double table, which adds ColStepsa to argument list
+void CollatzStepsDouble(unsigned long int num64[], int sizeNum, unsigned long int **ColSeq, int ColSeqSizes[], int ColSteps); // generate Collatz sequence, save the values along the way in 2D array, storing it twice
+//++++++++
 int CollatzCompare(unsigned long int num64[], int sizeNum, unsigned long int **ColSeq, int steps, int CoalData[], int ColSeqSizes[]); // generate Collatz sequence, compare the values along the way
+int CollatzCompareDouble(unsigned long int num64[], int sizeNum, unsigned long int **ColSeq, int steps, int CoalData[], int ColSeqSizes[], int StartIndex, int StopIndex); // generate Collatz sequence, compare the values along the way
 TableBuildInfo updateTable(unsigned long int** ColSeq, int* ColSeqSizes, int ColSteps, int numsize, int startPower, vector<Offset> initialOffsets, vector<Offset> tableThresholdOffsets, int threshMultiplier, int amountOfSamples, MPI_Comm comm); //self explanatory
 Offset parseOffset(string carr);
 bool compare64(unsigned long int num0[], unsigned long int num1[], int size); //checks if two num64s are equal
@@ -130,6 +104,8 @@ void print64(unsigned long int num64[], int size); // print out base 2^64 number
 
 //Here add the global variable that you'll use to store the number of times you don't have to compare because sizes were different.
 long long int timesNoCompare = 0;
+long long int timesYesCompare2 = 0; //++++++++ ADDED FOR SECOND LOOKUP TABLE ENTRY COMPARISON
+long long int timesYesCompare2M = 0; //++++++++ ADDED FOR SECOND LOOKUP TABLE ENTRY COMPARISON, FOR MATCHES ONLY
 long long int timesYesCompare = 0;
 long long int skippedSteps = 0;
 long long int shiftWasGreaterThan1 = 0;
@@ -143,7 +119,7 @@ bool PARALLEL_TABLES = false;
 /**
  * MAIN
 */
-int main(int argc, char *argv[]){	
+int main(int argc, char *argv[]){
 
 //ARGUEMENTS
 	int expon = atoi(argv[1]); //starting exponent of 2
@@ -155,14 +131,14 @@ int main(int argc, char *argv[]){
 	vector<Offset> testRangeOffsets;
 
 //COMMUNICATION
-    MPI::Init(argc, argv);
+    	MPI::Init(argc, argv);
 	MPI_Status status;
-    int size = MPI::COMM_WORLD.Get_size(); // get total size of the world
+    	int size = MPI::COMM_WORLD.Get_size(); // get total size of the world
 	int rank = MPI::COMM_WORLD.Get_rank(); // each process gets its own rank
 
 	char processorName[MPI_MAX_PROCESSOR_NAME];  // create character array for the names of the compute nodes
 	int processorNamelength = 0; // used for printing out the name of the compute node
-    MPI::Get_processor_name(processorName, processorNamelength);
+    	MPI::Get_processor_name(processorName, processorNamelength);
 
 	//make a group for just the workers
 	int color = (rank > 0) ? 1 : 0;
@@ -186,7 +162,7 @@ int main(int argc, char *argv[]){
 		// num64Size -1: is the kill flag, if set to 1, it will tell the work process to stop.
 		// num64Size -2: is the rebuild table flag, it holds a number to add to the thresholdsReached variable, if it is greater than 0 it will trigger a rebuild.
 		// num64Size -3: is the size of the num64 (not the size of the array), used to set sizeNum on the work nodes.
-	
+
 	//data recording for prints
 	long long int ii = 0; // for tallying up number of numbers checked
 	long long int ColSum = 0; // Coalescence sum for average
@@ -196,65 +172,73 @@ int main(int argc, char *argv[]){
 	int ColMinReduce = 0; // minimum depth a COllatz sequence had to run through before it matched with 2^k+1's sequenc
 	long long int timesNoCompareReduce = 0; //total number of times we didn't have to compare digit-by-digit for coalescence
 	long long int timesYesCompareReduce = 0; //total number of times we did have to compare digit-by-digit for coalescence
+	long long int timesYesCompareReduce2 = 0; //total number of times we did have to compare digit-by-digit for coalescence in 2nd table
+	long long int timesYesCompareReduce2M = 0; //total number of times we matched in the 2nd table
 	long long int skippedStepsReduce = 0; //total number of times that we skipped a step in computing the collatz sequence
 	long long int shiftWasGreaterThan1Reduce = 0;
 	int maxSkipStepsReduce = 0;
 
 	//RANK 0 COMMUNICATOR VARIABLES
-		long long int chunkCount = 0; //keeps track of current chunk, starts at 0
-		long long int chunks[size]; //stores chunk assignemnts, index = rank of work node assigned chunk
-		int chunkSizes[size]; //chunk sizes returned by work nodes
-		int lastNode; //keeps track of the last node to process
-		long long int chunkCounts[size]; //gather for local chunk counts
-		vector<BreakInfo> bInfos; //stores info of the breaks in BreakInfo structs
-		TableBuildInfo tbInfos = {0}; //infos got from table builds
+	long long int chunkCount = 0; //keeps track of current chunk, starts at 0
+	long long int chunks[size]; //stores chunk assignemnts, index = rank of work node assigned chunk
+	int chunkSizes[size]; //chunk sizes returned by work nodes
+	int lastNode; //keeps track of the last node to process
+	long long int chunkCounts[size]; //gather for local chunk counts
+	vector<BreakInfo> bInfos; //stores info of the breaks in BreakInfo structs
+	TableBuildInfo tbInfos = {0}; //infos got from table builds
 
 		//printing
-		long minTimes[size]; //gather for local min times
-		long maxTimes[size]; //gather for local max times
-		long duration = 0; // keep track of how long it takes to do a set of chunks
+	long minTimes[size]; //gather for local min times
+	long maxTimes[size]; //gather for local max times
+	long duration = 0; // keep track of how long it takes to do a set of chunks
         long oldduration = 0; // ditto
 
 	//WORK NODE VARIABLES
-		long long int iter = 0; //keeps track of chunks processed per node
-		int steps = 0; // keep track of the number of steps in Collatz Sequence
-		int extra2D = 2; // just enough  padding on the end of the 2D array to hold extra 3x+1 digits for start of code
+	long long int iter = 0; //keeps track of chunks processed per node
+	int steps = 0; // keep track of the number of steps in Collatz Sequence
+	int extra2D = 2; // just enough  padding on the end of the 2D array to hold extra 3x+1 digits for start of code
 
-		long minTime = LONG_MAX; //keeps track of minimum times locally
-		long maxTime = 0;	//keeps track of maximum times locally
+	long minTime = LONG_MAX; //keeps track of minimum times locally
+	long maxTime = 0;	//keeps track of maximum times locally
 
-		int *ColData = new int[3] (); // holds number of steps to coalesce, [1] and [2] hold min and max coalescence values
-		int ColSteps; //compute the number of steps
-		
-		unsigned long int **ColSeq; //2D sequential int array to hold Collatz Sequence
-		int *ColSeqSizes; //keeps track of the sizes of the numbers stores in ColSeq
-		
-	
+	int *ColData = new int[3] (); // holds number of steps to coalesce, [1] and [2] hold min and max coalescence values
+	int ColSteps; //compute the number of steps
+
+	unsigned long int **ColSeq; //2D sequential int array to hold Collatz Sequence
+	int *ColSeqSizes; //keeps track of the sizes of the numbers stores in ColSeq
+
 //INITIALIZAITION
 
 	//initialize conditional arguements
-	for(int i = 4; i < argc; i++){
+	for(int i = 4; i < argc; i++)
+	{
 		string tempS(argv[i]);
 		//table build range offsets
-		if (argv[i][0] == 't'){
+		if (argv[i][0] == 't')
+		{
 			string tempC = "";
-			for(int j = 1; j < tempS.length(); j++){
+			for(int j = 1; j < tempS.length(); j++)
+			{
 				tempC.insert(tempC.end(), tempS.at(j));
 			}
 			tableThresholdOffsets.push_back(parseOffset(tempC));
 		}
 		//initial offsets
-		else if (argv[i][0] == 'o'){
+		else if (argv[i][0] == 'o')
+		{
 			string tempC = "";
-			for(int j = 1; j < tempS.length(); j++){
+			for(int j = 1; j < tempS.length(); j++)
+			{
 				tempC.insert(tempC.end(), tempS.at(j));
 			}
 			initialOffsets.push_back(parseOffset(tempC));
 		}
 		//range offsets
-		else if (argv[i][0] == 'r'){
+		else if (argv[i][0] == 'r')
+		{
 			string tempC = "";
-			for(int j = 1; j < tempS.length(); j++){
+			for(int j = 1; j < tempS.length(); j++)
+			{
 				tempC.insert(tempC.end(), tempS.at(j));
 			}
 			testRangeOffsets.push_back(parseOffset(tempC));
@@ -262,33 +246,39 @@ int main(int argc, char *argv[]){
 			NONSTOP = true;
 		}
 		//skip even toggle
-		else if(tempS == "skip"){
+		else if(tempS == "skip")
+		{
 			SKIPEVENS = true;
 		}
-		//parallel tables
-		else if(tempS == "ptable"){
+		//paralell tables
+		else if(tempS == "ptable")
+		{
 			PARALLEL_TABLES = true;
 		}
 	}
 
 	//init powa2
-	for (int i = 0; i < powa; i++){
+	for (int i = 0; i < powa; i++)
+	{
 		powa2 = powa2*2;
 	}
 
 	//init num64s
 	num64hold[sizeNum] = ((1UL << entrybitshift) | num64hold[sizeNum]);//Set the leading value in the array to 1 so we have 2^k
 	num64hold[0]++;//Set the 0th place to 1 so we all have 2^k+1 now.
-	for(int i = 0; i < initialOffsets.size(); i++){
-		for(int j = 0; j < initialOffsets[i].multiplier; j++){
+	for(int i = 0; i < initialOffsets.size(); i++)
+	{
+		for(int j = 0; j < initialOffsets[i].multiplier; j++)
+		{
 			sizeNum = addPow2UL64(num64hold, initialOffsets[i].power, sizeNum);
 		}
 	}
 
-	for (int j = 0; j < num64Size; j++){
+	for (int j = 0; j < num64Size; j++)
+	{
 		num64[j] = num64hold[j];
 	}
-	
+
 	//init ColSteps
 	ColSteps = Collatz(num64, sizeNum);
 	ColData[1] = ColSteps; //used by CollatzCompare()	
@@ -297,48 +287,81 @@ int main(int argc, char *argv[]){
 
 		//now initialize the 2D array to fill with the numbers in the Collatz sequence now that we know the number of steps
 		//pay attention to how this is allocated.  This will be sequential memory for a 2D array!!!!
-		ColSeq = (unsigned long int**)malloc(ColSteps * sizeof(unsigned long int*)); 					//2D sequential int array to hold Collatz Sequence
-		ColSeq[0] = (unsigned long int*)malloc(ColSteps * (num64Size) * sizeof(unsigned long int));
-		for (int j = 1; j < ColSteps; j++){
-			ColSeq[j] = ColSeq[j-1] +  (num64Size);
+
+//++++++ UPDATE THESE SIZES TO 2COLSTEPS
+	ColSeq = (unsigned long int**)malloc(2*ColSteps * sizeof(unsigned long int*)); 					//2D sequential int array to hold Collatz Sequence
+	ColSeq[0] = (unsigned long int*)malloc(2*ColSteps * (num64Size) * sizeof(unsigned long int));
+	for (int j = 1; j < 2*ColSteps; j++)
+	{
+		ColSeq[j] = ColSeq[j-1] +  (num64Size);
+	}
+	//let's make sure these are all set to zero first as malloc does not guarantee this (try calloc?)
+	for (int i = 0; i < 2*ColSteps; i++)
+	{
+		for (int j = 0; j < num64Size; j++)
+		{
+			ColSeq[i][j] = 0UL;
 		}
-		//let's make sure these are all set to zero first as malloc does not guarantee this (try calloc?)
-		for (int i = 0; i < ColSteps; i++){
-			for (int j = 0; j < num64Size; j++){
-				ColSeq[i][j] = 0UL;
-			}
+	}
+	ColSeqSizes = new int[2*ColSteps](); //init ColSeqSizes
+//++++
+
+// ++++ code being replaced start
+/*
+	ColSeq = (unsigned long int**)malloc(ColSteps * sizeof(unsigned long int*)); 					//2D sequential int array to hold Collatz Sequence
+	ColSeq[0] = (unsigned long int*)malloc(ColSteps * (num64Size) * sizeof(unsigned long int));
+	for (int j = 1; j < ColSteps; j++)
+	{
+		ColSeq[j] = ColSeq[j-1] +  (num64Size);
+	}
+	//let's make sure these are all set to zero first as malloc does not guarantee this (try calloc?)
+	for (int i = 0; i < ColSteps; i++)
+	{
+		for (int j = 0; j < num64Size; j++)
+		{
+			ColSeq[i][j] = 0UL;
 		}
-		ColSeqSizes = new int[ColSteps](); //init ColSeqSizes
-		
-		//reset the number since num64 was modified in the ColSteps function
-		for (int j = 0; j < num64Size; j++){
-			num64[j] = num64hold[j];
-		}
-
-		//Here I initialize the array storing the size of each number in the collatz sequence.
-		//initialize ColSeq on Worknodes
-		if (rank > 0){
-
-			//initialize table with 2^expon + 1
-            cerr << "[" << processorName << "] Rank " << rank << ": 2D Array Build Initiated." << "\n";
-             CollatzSteps(num64, sizeNum, ColSeq, ColSeqSizes);
-            cerr << "[" << processorName << "] Rank " << rank << ": 2D Array Build Finalized." << "\n";
-
-			//build table with sampled numbers from 2^expon + 1 to 2^expon + 2^thresholdPower
-            cerr << "[" << processorName << "] Rank " << rank << ": Table Build Initiated." << "\n";
-			tbInfos = updateTable(ColSeq, ColSeqSizes, ColSteps, num64Size, expon, initialOffsets, tableThresholdOffsets, 0, tableSampleAmount, workCommunicator);;
-            cerr << "[" << processorName << "] Rank " << rank << ": Table Build Finalized." << "\n";
+	}
+	ColSeqSizes = new int[ColSteps](); //init ColSeqSizes
+*/
+// ++++ code being replaced stop
 
 
-		}
 
+	//reset the number since num64 was modified in the ColSteps function
+	for (int j = 0; j < num64Size; j++)
+	{
+		num64[j] = num64hold[j];
+	}
+	//Here I initialize the array storing the size of each number in the collatz sequence.
+	//initialize ColSeq on Worknodes
+	if (rank > 0)
+	{
+
+		//initialize table with 2^expon + 1
+            	//cerr << "[" << processorName << "] Rank " << rank << ": 2D Array Build Initiated." << "\n";
+//+++++ Use updated function here!
+             	CollatzStepsDouble(num64, sizeNum, ColSeq, ColSeqSizes, ColSteps);
+//+++++
+
+// ++++ code being replaced start
+//             	CollatzSteps(num64, sizeNum, ColSeq, ColSeqSizes);
+// ++++ code being replaced stop
+
+            	//cerr << "[" << processorName << "] Rank " << rank << ": 2D Array Build Finalized." << "\n";
+
+		//build table with sampled numbers from 2^expon + 1 to 2^expon + 2^thresholdPower
+            	//cerr << "[" << processorName << "] Rank " << rank << ": Table Build Initiated." << "\n";
+		tbInfos = updateTable(ColSeq, ColSeqSizes, ColSteps, num64Size, expon, initialOffsets, tableThresholdOffsets, 0, tableSampleAmount, workCommunicator);;
+            	//cerr << "[" << processorName << "] Rank " << rank << ": Table Build Finalized." << "\n";
+
+	}
 //END INITIALIZATION
 
-    cout << "Node[" << processorName << "]:  Rank " << rank << " finished initialization " << endl;
-	
+    	cout << "Node[" << processorName << "]:  Rank " << rank << " finished initialization, skip BOOL set to " << SKIPEVENS << endl;
 	MPI_Barrier(MPI_COMM_WORLD);
-
-	if(rank == 1){
+	if(rank == 1)
+	{
 		printTableInfo(tbInfos);
 	}
 
@@ -350,19 +373,23 @@ int main(int argc, char *argv[]){
 	//will send rebuild table flag when the current chunk is a multiple of the 2^(thresholdPower - chunksize)
 	//then collects remaining work and sends kill command
 	//processes and gathers information about the breaks in bInfos
-	if (rank == 0){
+	if (rank == 0)
+	{
 
 		bool kg = true; //keep going boolean for work
-        auto startTimerPZero = chrono::high_resolution_clock::now(); //start timer
+        	auto startTimerPZero = chrono::high_resolution_clock::now(); //start timer
 		long long threshold = 1LL; //number to check against to send rebuild table flag
 		int rebuildFlags[size] = {0}; //keeps track of flags sent
 		long long maxChunk = 0LL;
 
 		//initialize threshold
-		for(int i = 0; i < tableThresholdOffsets.size(); i++){
-			for(int j = 0; j < tableThresholdOffsets[i].multiplier; j++){
+		for(int i = 0; i < tableThresholdOffsets.size(); i++)
+		{
+			for(int j = 0; j < tableThresholdOffsets[i].multiplier; j++)
+			{
 				long long tempThresh = 1LL;
-				for(int k = 0; k < tableThresholdOffsets[i].power - powa; k++){
+				for(int k = 0; k < tableThresholdOffsets[i].power - powa; k++)
+				{
 					tempThresh *= 2LL;
 				}
 				threshold += tempThresh;
@@ -370,10 +397,13 @@ int main(int argc, char *argv[]){
 		}
 
 		//initialize test range
-		for(int i = 0; i < testRangeOffsets.size(); i++){
-			for(int j = 0; j < testRangeOffsets[i].multiplier; j++){
+		for(int i = 0; i < testRangeOffsets.size(); i++)
+		{
+			for(int j = 0; j < testRangeOffsets[i].multiplier; j++)
+			{
 				long long tempRange = 1LL;
-				for(int k = 0; k < testRangeOffsets[i].power - powa; k++){
+				for(int k = 0; k < testRangeOffsets[i].power - powa; k++)
+				{
 					tempRange *= 2LL;
 				}
 				maxChunk += tempRange;
@@ -395,48 +425,53 @@ int main(int argc, char *argv[]){
 		}
 
 		//work loop
-		while(kg){
+		while(kg)
+		{
 			int chunkSize; //collection variable received
-			
+
 			MPI_Recv(&chunkSize, 1, MPI_INT, MPI_ANY_SOURCE, 0, MPI_COMM_WORLD, &status);
-			
+
 			int sender = status.MPI_SOURCE; //rank received from
 
 			chunkSizes[sender] = chunkSize; //store the received value in the appropiate position in chunkSizes
-
 			//condition to find a break
-			if (chunkSize < powa2){
+			if (chunkSize < powa2)
+			{
 				bInfos.push_back({sender, chunks[sender], chunkSize});
 				printf("Rank %i breaks with a chunk size of %i in chunk %i\n", sender, chunkSizes[sender], chunks[sender]);
-				if(!NONSTOP){
+				if(!NONSTOP)
+				{
 					num64hold[num64Size-1] = 1UL;
 					kg = false;
 				}
 			}
 
-			if(NONSTOP && chunks[sender] >= maxChunk){
+			if(NONSTOP && chunks[sender] >= maxChunk)
+			{
 				num64hold[num64Size-1] = 1UL;
 				kg = false;
 			}
 
 			//keep going if a break isnt found, assigning the sender more work
-			else{
-
-
+			else
+			{
 				chunks[sender] = chunkCount++;
 				//printf("Rank %i receives chunk %i\n", sender, chunkCount - 1);
 
-								//if threshold is met, ready flags for rebuild
-				if((chunkCount)%threshold == 0LL){
+				//if threshold is met, ready flags for rebuild
+				if((chunkCount)%threshold == 0LL)
+				{
 					printf("Flag Triggered!\n");
-					for(int i = 0; i < size; i++){
+					for(int i = 0; i < size; i++)
+					{
 						rebuildFlags[i]++;
 					}
 				}
 			}
 
 			//if a flag is waiting, send it
-			if(rebuildFlags[sender] > 0){
+			if(rebuildFlags[sender] > 0)
+			{
 				//printf("Sent flag to rank %i.\n", sender);
 				num64hold[num64Size - 2] = (unsigned long int) rebuildFlags[sender];
 				rebuildFlags[sender] = 0;
@@ -450,28 +485,27 @@ int main(int argc, char *argv[]){
 			num64hold[num64Size - 2] = 0UL;
 
 			//if more work was sent, shiftBin again
-			if (kg){
+			if (kg)
+			{
 				sizeNum = addPow2UL64(num64hold, powa, sizeNum);
-
-
-                if (chunkCount % 10000LL == 0LL){
+//                		if (chunkCount % 1000000LL == 0LL)
+                                if ( !( chunkCount & 1048575LLU ) )
+				{
 					//printf("chunk %i has been sent\n", chunkCount);
+	                    		auto stopTimerPZero = chrono::high_resolution_clock::now();
+        	            		duration = chrono::duration_cast<chrono::milliseconds>(stopTimerPZero - startTimerPZero).count();
 
-                    auto stopTimerPZero = chrono::high_resolution_clock::now();
-                    duration = chrono::duration_cast<chrono::milliseconds>(stopTimerPZero - startTimerPZero).count();
+                	    		cout << "Node " << processorName <<  " -- Rank " << rank << ": Chunk " << chunkCount << " has been sent, previous chunk processing time: " << duration - oldduration << endl;
+                    			oldduration = duration;
 
-                    cout << "Node " << processorName <<  " -- Rank " << rank << ": Chunk " << chunkCount << " has been sent, previous chunk processing time: " << duration - oldduration << endl;
-                    oldduration = duration;
-
-                    auto startTimerPZero = chrono::high_resolution_clock::now(); //start timer over
-
-                }
-
+  			                auto startTimerPZero = chrono::high_resolution_clock::now(); //start timer over
+		                }
 			}
 		}
 
 		//cleanup when break is found, continuing to record any further breaks in lt round
-		for(int i = 2; i < size; i++){
+		for(int i = 2; i < size; i++)
+		{
 
 			//same as work loop, gathering the remaining chunksizes
 			int chunkSize;
@@ -482,12 +516,14 @@ int main(int argc, char *argv[]){
 			chunkSizes[sender] = chunkSize;
 
 			//keeps track if any more breaks are found
-			if (chunkSize < powa2){
+			if (chunkSize < powa2)
+			{
 				bInfos.push_back({sender, chunks[sender], chunkSize});
 				printf("Rank %i breaks with a chunk size of %i in chunk %i\n", sender, chunkSizes[sender], chunks[sender]);
 			}
 
-			if(rebuildFlags[sender] > 0){
+			if(rebuildFlags[sender] > 0)
+			{
 					//printf("Sent flag to rank %i.\n", sender);
 					num64hold[num64Size - 2] = (unsigned long int) rebuildFlags[sender];
 					rebuildFlags[sender] = 0;
@@ -500,11 +536,19 @@ int main(int argc, char *argv[]){
 		}
 
 		//sort the breaks by chunk asc
-		sort(bInfos.begin(), bInfos.end(),
-			[](const BreakInfo& a, const BreakInfo& b){
+		if (!bInfos.empty())
+		{
+			cout << "**Sorting breaks!!!" << endl  << endl << endl;
+			sort(bInfos.begin(), bInfos.end(), [](const BreakInfo& a, const BreakInfo& b)
+			{
 				return a.chunk < b.chunk;
-			} 
-		);	
+			}
+			);
+		}
+		else
+		{
+			cout << "**No breaks found!" << endl << endl << endl;
+		}
 	}
 
 	//WORK NODES RANK > 0
@@ -512,13 +556,15 @@ int main(int argc, char *argv[]){
 	//rebuild lookup table if it receives the rebuild flag
 	//loop through the assigned chunk, checking for breaks, stop loop if break is found
 	//return how many numbers have been checked in the chunk
-	if (rank > 0){
+	if (rank > 0)
+	{
 
 		iter = 0; //keeps track of the chunks this node has processed
 		int thresholdsReached = 0;
 
 		//work loop, will terminate when stop signal is received : num64Hold[num64Size-1] = 1;
-		do{
+		do
+		{
 			MPI_Recv(num64hold, num64Size, MPI_UNSIGNED_LONG, 0, 0, MPI_COMM_WORLD, &status);
 			sizeNum = (int) num64hold[num64Size - 3];
 
@@ -526,25 +572,27 @@ int main(int argc, char *argv[]){
 			int streakChunk = 0; //keep track of steps through the assigned range
 
 			//rebuild ColSeq lookup table if the flag is received from rank 0
-			if (num64hold[num64Size - 2] > 0UL){
-
-				cerr << "[" << processorName << "] Rank " << rank << ": Table Build Initiated." << "\n";
+			if (num64hold[num64Size - 2] > 0UL)
+			{
+				//cerr << "[" << processorName << "] Rank " << rank << ": Table Build Initiated." << "\n";
 				thresholdsReached += (int) num64hold[sizeNum+extra - 1];
 				tbInfos = updateTable(ColSeq, ColSeqSizes, ColSteps, num64Size, expon, initialOffsets, tableThresholdOffsets, thresholdsReached, tableSampleAmount, workCommunicator);
-				cerr << "[" << processorName << "] Rank " << rank << ": Table Build Finalized." << "\n";
+				//cerr << "[" << processorName << "] Rank " << rank << ": Table Build Finalized." << "\n";
 
-				if(rank == 1){
+				if(rank == 1)
+				{
 					printTableInfo(tbInfos);
 				}
 				num64hold[num64Size - 2] = 0UL; //reset flag
 			}
 
 			//if work, do CollatzWork
-			if (num64hold[num64Size - 1] != 1UL){
+			if (num64hold[num64Size - 1] != 1UL)
+			{
 
 				//printf("This is rank %i on iteration %i\n", rank, iter);
-
-				for (int j = 0; j < num64Size; j++){
+				for (int j = 0; j < num64Size; j++)
+				{
 					num64[j] = num64hold[j];
 					//firstnumber[j] = binnumberHold[j];
 				}
@@ -558,7 +606,14 @@ int main(int argc, char *argv[]){
 					// ColSeq is the array which holds the numbers in the sequence for 2^k+1
 					// ColData is the array of useful information (steps, max and min steps)
 
-					steps = CollatzCompare(num64, sizeNum, ColSeq, ColSteps, ColData, ColSeqSizes);
+//++++ swap out CollatzSteps with the double
+					steps = CollatzCompareDouble(num64, sizeNum, ColSeq, ColSteps, ColData, ColSeqSizes, tbInfos.startIndex, tbInfos.stopIndex);
+//++++
+
+// ++++ code being replaced start
+//					steps = CollatzCompare(num64, sizeNum, ColSeq, ColSteps, ColData, ColSeqSizes);
+// ++++ code being replaced stop
+
 
 					// add number of steps to sum for average to be computed later
 					ColSum = ColSum + ColData[0];
@@ -587,12 +642,13 @@ int main(int argc, char *argv[]){
 					{
 						sizeNum = add64b1(num64hold, sizeNum);
 
-						if(SKIPEVENS && (num64hold[0] & 1UL) == 0 && i != powa2 - 2){
+						if(SKIPEVENS && (num64hold[0] & 1UL) == 0 && i != powa2 - 2)
+						{
 							sizeNum = add64b1(num64hold, sizeNum);
 							streakChunk++;
 							i++;
 						}
-						
+
 						for (int j = 0; j < sizeNum + extra; j++)
 						{
 							num64[j] = num64hold[j];
@@ -608,7 +664,7 @@ int main(int argc, char *argv[]){
 
 				if (duration < minTime) minTime = duration;
 				if (duration > maxTime) maxTime = duration;
-				
+
 				//cout << "Rank " << rank << " finishes iteration " << iter << " in " << duration << " ms" << endl;
 				//return chunksize to controller node
 				MPI_Send(&streakChunk, 1, MPI_INT, 0, 0, MPI_COMM_WORLD);
@@ -616,14 +672,16 @@ int main(int argc, char *argv[]){
 				iter++;
 			}
 
-		} while (num64hold[num64Size - 1] != 1UL);
+		}
+		while (num64hold[num64Size - 1] != 1UL);
 	}
 
 //PRINT RESULTS
 
 	// ok, so let's let everyone catch up here!  If a process(es) got done early, it will wait here.
-    cout << "Node " << processorName <<  " -- Rank " << rank << ": Waiting at the barrier." ;
-	if (rank > 0){
+    	cout << "Node " << processorName <<  " -- Rank " << rank << ": Waiting at the barrier." ;
+	if (rank > 0)
+	{
 		cout << "Min Time: " << minTime << " ms. Max Time: " << maxTime << " ms." << endl;
 	}
 
@@ -641,19 +699,25 @@ int main(int argc, char *argv[]){
 	MPI_Reduce(&maxSkipSteps, &maxSkipStepsReduce, 1, MPI_INT, MPI_MAX, 0, MPI_COMM_WORLD);
 	MPI_Reduce(&timesNoCompare, &timesNoCompareReduce, 1, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
 	MPI_Reduce(&timesYesCompare, &timesYesCompareReduce, 1, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+	MPI_Reduce(&timesYesCompare2, &timesYesCompareReduce2, 1, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+	MPI_Reduce(&timesYesCompare2M, &timesYesCompareReduce2M, 1, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
 	MPI_Reduce(&skippedSteps, &skippedStepsReduce, 1, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
 	MPI_Reduce(&shiftWasGreaterThan1, &shiftWasGreaterThan1Reduce, 1, MPI_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
 
 	//Node 0 Prints Results
-	if (rank == 0){
-
+	if (rank == 0)
+	{
 		//find biggest streak
-		long long int biggestStreak = (bInfos[0].chunk) * (long long int) powa2 + (long long int) bInfos[0].chunkSize;
 
-		for (int i = 1; i < bInfos.size(); i++){
-			long long int currentStreak = ((bInfos[i].chunk * (long long int)powa2) + (long long int) bInfos[i].chunkSize) - (( bInfos[i - 1].chunk * (long long int) powa2) + (long long int) bInfos[i -1].chunkSize);
-
-			if (currentStreak > biggestStreak) biggestStreak = currentStreak;
+		long long int biggestStreak = 0UL;
+                if (!bInfos.empty())
+                {
+			biggestStreak = (bInfos[0].chunk) * (long long int) powa2 + (long long int) bInfos[0].chunkSize;
+			for (int i = 1; i < bInfos.size(); i++)
+			{
+				long long int currentStreak = ((bInfos[i].chunk * (long long int)powa2) + (long long int) bInfos[i].chunkSize) - (( bInfos[i - 1].chunk * (long long int) powa2) + (long long int) bInfos[i -1].chunkSize);
+				if (currentStreak > biggestStreak) biggestStreak = currentStreak;
+			}
 		}
 
 		//find average min and max times
@@ -666,7 +730,8 @@ int main(int argc, char *argv[]){
 		long long int maxChunk = 0;
 		long long int avgChunk = 0;
 
-		for (int i = 1; i < size; i++){
+		for (int i = 1; i < size; i++)
+		{
 			avgMin += minTimes[i];
 			avgMax += maxTimes[i];
 			if (minTimes[i] < absMin) absMin = minTimes[i];
@@ -690,66 +755,85 @@ int main(int argc, char *argv[]){
 */
                 printf("Chunks Processed Per Node:\t\t");
                 cout << endl;
-                for(int i = 1; i < size; i++){
+                for(int i = 1; i < size; i++)
+		{
                         cout << "Rank " << i << ": " << chunkCounts[i] << endl;
 //                      printf("%i\t", chunkCounts[i]);
                 }
                 printf("\n");
 
-
-
-
 		printf("Mininum Times Per Node(ms):\t\t");
-		for(int i = 1; i < size; i++){
+		for(int i = 1; i < size; i++)
+		{
 			printf("%ld\t", minTimes[i]);
 		}
 		printf("\n");
 
 		printf("Maxmimum Times Per Node(ms):\t");
-		for(int i = 1; i < size; i++){
+		for(int i = 1; i < size; i++)
+		{
 			printf("%ld\t", maxTimes[i]);
 		}
 		printf("\n");
 
-
-
 		cout << endl << endl << endl;
 
-		//print out found breaks
-		for (int i = 0; i < bInfos.size(); i++){
-			cout << "Node " << processorName << " -- Rank " << rank << ": A break was found by rank " << bInfos[i].rank << " at " << (bInfos[i].chunk) * (long long int) powa2 + (long long int) bInfos[i].chunkSize << " in chunk " << bInfos[i].chunk << endl;
+                if (!bInfos.empty())
+                {
+			//print out found breaks
+			for (int i = 0; i < bInfos.size(); i++)
+			{
+				cout << "Node " << processorName << " -- Rank " << rank << ": A break was found by rank " << bInfos[i].rank << " at " << (bInfos[i].chunk) * (long long int) powa2 + (long long int) bInfos[i].chunkSize << " in chunk " << bInfos[i].chunk << endl;
+			}
 		}
 
 
 		// print out all the userful info here!  Hopefully we do not have currun == size*powa2
 		cout << "Node " << processorName <<  " -- Rank " << rank << ":  Numbers start at (2^" << expon;
-		for(int i = 0; i < initialOffsets.size(); i++){
+		for(int i = 0; i < initialOffsets.size(); i++)
+		{
 			printf(" + ");
 			if(initialOffsets[i].multiplier > 1) printf("%i(", initialOffsets[i].multiplier);
 			printf("2^%i", initialOffsets[i].power);
 			if(initialOffsets[i].multiplier > 1) printf(")");
 		}
-		cout << ") + 1 with the biggest streak being " << biggestStreak << " long. Range spanned "  << (long long int) (chunkCount)*powa2 << " numbers" << endl;
-
+                if (!bInfos.empty())
+                {
+			cout << ") + 1 with the biggest streak being " << biggestStreak << " long. Range spanned "  << (long long int) (chunkCount)*powa2 << " numbers" << endl;
+		}
+		else
+		{
+			cout << ") + 1, Range spanned "  << (long long int) (chunkCount)*powa2 << " numbers with no break found." << endl;
+		}
 		// now the fun stats!
 		cout << "Node " << processorName <<  " -- Rank " << rank << ": Shortest coalescence value is :  " << ColMinReduce << endl;
 		cout << "Node " << processorName <<  " -- Rank " << rank << ": Longest coalescence value is  :  " << ColMaxReduce << endl;
 		cout << "Node " << processorName <<  " -- Rank " << rank << ": Sum of coalescence values is  :  " << ColSumReduce << endl;
 		cout << "Node " << processorName <<  " -- Rank " << rank << ": Average coalescence value is  :  " << ColSumReduce/ColSumReducei << endl;
 		cout << "Node " << processorName <<  " -- Rank " << rank << ": Total number of values checked is " << ColSumReducei << endl;
-		cout << "Node " << processorName <<  " -- Rank " << rank << ": Total times the sizes were unequal (didn't compare digit-by-digit) is :" << timesNoCompareReduce << endl;
-		cout << "Node " << processorName <<  " -- Rank " << rank << ": Total times the sizes were equal (did compare digit-by-digit) is      :" << timesYesCompareReduce << endl;
+		cout << "Node " << processorName <<  " -- Rank " << rank << ": Total times the sizes were unequal (didn't compare digit-by-digit) is   : " << timesNoCompareReduce << endl;
+		cout << "Node " << processorName <<  " -- Rank " << rank << ": Total times the sizes were equal (did compare digit-by-digit) in table 1: " << timesYesCompareReduce << endl;
+		cout << "Node " << processorName <<  " -- Rank " << rank << ": Total times the sizes were equal (did compare digit-by-digit) in table 2: " << timesYesCompareReduce2 << endl;
+		cout << "Node " << processorName <<  " -- Rank " << rank << ": Total times we matched on the second table : " << timesYesCompareReduce2M << endl;
 		cout << "Node " << processorName <<  " -- Rank " << rank << ": Total times we skipped a step is: " << skippedStepsReduce << endl;
-		cout << "Node " << processorName <<  " -- Rank " << rank << ": Total times shift was greater than 1 is: " << shiftWasGreaterThan1Reduce << endl;
-		cout << "Node " << processorName <<  " -- Rank " << rank << ": Max number of sequential divide by 2's is: " << maxSkipStepsReduce << endl;
-	    cout << "Node " << processorName <<  " -- Rank " << rank << ": Total Chunks Processed is: " <<  chunkCount << endl;
-        cout << "Node " << processorName <<  " -- Rank " << rank << ": Minimum Chunks Processed is: " << minChunk << endl;
-        cout << "Node " << processorName <<  " -- Rank " << rank << ": Maximum Chunks Processed is: " <<  maxChunk << endl;
-        cout << "Node " << processorName <<  " -- Rank " << rank << ": AVG Chunks Processed is is : " << avgChunk << endl;
-        cout << "Node " << processorName <<  " -- Rank " << rank << ": AVG Minimum Time (ms) is : " << avgMin << endl;
-        cout << "Node " << processorName <<  " -- Rank " << rank << ": AVG Maximum Time (ms) is : " << avgMax << endl;
-        cout << "Node " << processorName <<  " -- Rank " << rank << ": ABS Minimum Times (ms) is : " << absMin << endl;
-        cout << "Node " << processorName <<  " -- Rank " << rank << ": ABS Maximum Time (ms) is : " << absMax << endl;
+//		cout << "Node " << processorName <<  " -- Rank " << rank << ": Total times shift was greater than 1 is: " << shiftWasGreaterThan1Reduce << endl;
+//		cout << "Node " << processorName <<  " -- Rank " << rank << ": Max number of sequential divide by 2's is: " << maxSkipStepsReduce << endl;
+	    	cout << "Node " << processorName <<  " -- Rank " << rank << ": Total Chunks Processed is: " <<  chunkCount << endl;
+        	cout << "Node " << processorName <<  " -- Rank " << rank << ": Minimum Chunks Processed is: " << minChunk << endl;
+        	cout << "Node " << processorName <<  " -- Rank " << rank << ": Maximum Chunks Processed is: " <<  maxChunk << endl;
+        	cout << "Node " << processorName <<  " -- Rank " << rank << ": AVG Chunks Processed is is : " << avgChunk << endl;
+        	cout << "Node " << processorName <<  " -- Rank " << rank << ": AVG Minimum Time (ms) is : " << avgMin << endl;
+        	cout << "Node " << processorName <<  " -- Rank " << rank << ": AVG Maximum Time (ms) is : " << avgMax << endl;
+        	cout << "Node " << processorName <<  " -- Rank " << rank << ": ABS Minimum Times (ms) is : " << absMin << endl;
+        	cout << "Node " << processorName <<  " -- Rank " << rank << ": ABS Maximum Time (ms) is : " << absMax << endl;
+
+		cout << endl << endl;
+                cout << ColMinReduce << " " << ColMaxReduce << " " << ColSumReduce << " 0 " << ColSumReduce/ColSumReducei << " 0 "
+                     << ColSumReducei << " " << timesNoCompareReduce << " " << timesYesCompareReduce << " 0 " << skippedStepsReduce
+                     << " " << shiftWasGreaterThan1Reduce << " " << maxSkipStepsReduce << " " << chunkCount << " " << minChunk << " "
+                     << maxChunk << " " << avgChunk << " " << avgMin << " " << avgMax << " " << absMin << " " << absMax << " "
+		     << timesYesCompareReduce2 << " " << timesYesCompareReduce2M << endl;
+
 	}
 
 	// now time to delete the arrays!
@@ -761,7 +845,7 @@ int main(int argc, char *argv[]){
 	free(ColSeq);
 
 
-    MPI::Finalize();
+    	MPI::Finalize();
 
 	return 0;
 }
@@ -771,8 +855,9 @@ int main(int argc, char *argv[]){
  * It will first initialise the samples along the range picking randomly in equal clamped sets.
  * It will then parallely check the sample heights to ensure no breaks.
  * Then it will initialize the table 1 integer after the threshold.
+ * If a break is found it will abort, returning all 0s in the return TableBuildInfo.
  * Finally it will step through the collatz sequence on each sample, recording the first highest mode in the lookup table.
- * 
+ *
  * @param ColSeq the 2D array lookup table
  * @param ColSeqSizes the array of the sizes
  * @param ColSteps number of steps in the sequence
@@ -809,7 +894,7 @@ TableBuildInfo updateTable(unsigned long int** ColSeq, int* ColSeqSizes, int Col
 	int size = 0; //local groupsize
 	MPI_Comm_rank(comm, &rank);
 	MPI_Comm_size(comm, &size);
-	
+
 	//for communicating if one of the samples is a break
 	int breakFound = 0;
 	int breakFlags[size];
@@ -827,9 +912,14 @@ TableBuildInfo updateTable(unsigned long int** ColSeq, int* ColSeqSizes, int Col
 	//main variables to store sample info
 	vector<Sample> samples;
 	Sample runningSample;
-	unsigned long int tempBin[numsize]{0UL}; //a num64 array to copy to when doing something destructive, like Collatz()
-	unsigned long int tempTempBin[numsize]{0UL}; //same deal as the previous one
+	unsigned long int tempBin[numsize]; //a num64 array to copy to when doing something destructive, like Collatz()
+	unsigned long int tempTempBin[numsize]; //same deal as the previous one
 	stack<int> dumpIndices;
+
+	for(int i = 0; i < numsize; i++)
+	{
+		tempBin[i] = tempTempBin[i] = 0UL;
+	}
 
 	int maxFrequency = 1; //the highest frequency of a mode found
 	int modeIndex = -1; //the index of the highest frequency mode found
@@ -843,10 +933,13 @@ TableBuildInfo updateTable(unsigned long int** ColSeq, int* ColSeqSizes, int Col
 //INITIALIZE
 
 	//initialize spacing : (2^thresholdPower / amountOfSamples) atleast 1
-	for(int i = 0; i < tableThresholdOffsets.size(); i++){
-		for(int j = 0; j < tableThresholdOffsets[i].multiplier; j++){
+	for(int i = 0; i < tableThresholdOffsets.size(); i++)
+	{
+		for(int j = 0; j < tableThresholdOffsets[i].multiplier; j++)
+		{
 			long long tempThresh = 1LL;
-			for(int k = 0; k < tableThresholdOffsets[i].power; k++){
+			for(int k = 0; k < tableThresholdOffsets[i].power; k++)
+			{
 				tempThresh *= 2LL;
 			}
 			spacing += tempThresh;
@@ -857,7 +950,8 @@ TableBuildInfo updateTable(unsigned long int** ColSeq, int* ColSeqSizes, int Col
 	tbInfos.spacing = spacing;//record spacing
 
 	//generate offsets
-	for(int i = 0; i < amountOfSamples; i++){
+	for(int i = 0; i < amountOfSamples; i++)
+	{
 		intervalOffsets[i] = distribution(generator)%spacing - (spacing/2LL);
 	}
 
@@ -868,69 +962,79 @@ TableBuildInfo updateTable(unsigned long int** ColSeq, int* ColSeqSizes, int Col
 	//then they are given a random offset to expand the sample set
 	samples.reserve(amountOfSamples);
 
-	for(int i = 0; i < amountOfSamples; i++){
-
-		samples.push_back({
-			new unsigned long int[numsize]{0UL}, //num64
-			startPower/64, //size
-			1 //frequency
-		});
+	for(int i = 0; i < amountOfSamples; i++)
+	{
+		samples.push_back({ new unsigned long int[numsize]{0UL}, //num64 
+				    startPower/64, //size
+				    1 //frequency
+				   });
 
 		samples[i].num64[startPower/64] = ((1UL << (startPower & 63)) | samples[i].num64[startPower/64]);
 
 		//add threshold to number, INITAL POWER MUST BE HIGHER THAN THE THRESHOLD
-		for(int j = 0; j < threshMultiplier; j++){
-			for(int k = 0; k < tableThresholdOffsets.size(); k++){
-				for(int l = 0; l < tableThresholdOffsets[k].multiplier; l++){
+		for(int j = 0; j < threshMultiplier; j++)
+		{
+			for(int k = 0; k < tableThresholdOffsets.size(); k++)
+			{
+				for(int l = 0; l < tableThresholdOffsets[k].multiplier; l++)
+				{
 					samples[i].size = addPow2UL64(samples[i].num64, tableThresholdOffsets[k].power, samples[i].size);
 				}
 			}
 		}
 
 		//add offsets
-		for(int j = 0; j < initialOffsets.size(); j++){
-			for(int k = 0; k < initialOffsets[j].multiplier; k++){
+		for(int j = 0; j < initialOffsets.size(); j++)
+		{
+			for(int k = 0; k < initialOffsets[j].multiplier; k++)
+			{
 				samples[i].size = addPow2UL64(samples[i].num64, initialOffsets[j].power, samples[i].size);
 			}
 		}
-		
+
 		samples[i].size = addUL64(samples[i].num64, (unsigned long int)(spacing * (long long int)(i + 1) + intervalOffsets[i]), samples[i].size);
 	}
 
 //CHECK HEIGHTS
 	//parallel version
-	if(PARALLEL_TABLES){
+	if(PARALLEL_TABLES)
+	{
 		//distribution of ranges for each node to check
 		int assignedSize = samples.size() / size;
 		int extra = samples.size() % size;
 		int assignedSizes[size] = {0};
 		int startIndices[size] = {0};
 
-		for(int i = 0; i < size; i++){
+		for(int i = 0; i < size; i++)
+		{
 			assignedSizes[i] = assignedSize;
 		}
 
-		for(int i = 0; i < extra; i++){
+		for(int i = 0; i < extra; i++)
+		{
 			assignedSizes[i]++;
 		}
 
 		int runningTotal = 0;
-		for(int i = 1; i < size; i++){
+		for(int i = 1; i < size; i++)
+		{
 			runningTotal += assignedSizes[i-1];
 			startIndices[i] = runningTotal;
 		}
 
 		//check heights for break, different ranks check their assigned range
-		for(int i = 0; i < assignedSizes[rank]; i++){
-				
+		for(int i = 0; i < assignedSizes[rank]; i++)
+		{
 			//array copy because Collatz() is destructive
-			for(int j = 0; j < numsize; j++){
+			for(int j = 0; j < numsize; j++)
+			{
 				tempBin[j] = samples[startIndices[rank] + i].num64[j];
 			}
-			
+
 			int currentSteps = CollatzCompare(tempBin, samples[startIndices[rank]+i].size, ColSeq, ColSteps, dummyData, ColSeqSizes);
 
-			if(currentSteps != ColSteps){	
+			if(currentSteps != ColSteps)
+			{
 				//if(rank == 0) printf("First Trigger: x: %i, colSteps: %i\n", currentSteps, ColSteps);
 				breakFound++;
 				breakIndices.push(startIndices[rank] + i);
@@ -940,10 +1044,13 @@ TableBuildInfo updateTable(unsigned long int** ColSeq, int* ColSeqSizes, int Col
 		//gather and mark breaks for dumping
 		MPI_Allgather(&breakFound, 1, MPI_INT, breakFlags, 1, MPI_INT, comm);
 
-		for(int i = 0; i < size; i++){
-			for(int j = 0; j < breakFlags[i]; j++){
+		for(int i = 0; i < size; i++)
+		{
+			for(int j = 0; j < breakFlags[i]; j++)
+			{
 				int tempIndex = 0;
-				if(rank == i){
+				if(rank == i)
+				{
 					tempIndex = breakIndices.top();
 					breakIndices.pop();
 				}
@@ -953,18 +1060,21 @@ TableBuildInfo updateTable(unsigned long int** ColSeq, int* ColSeqSizes, int Col
 		}
 	}
 	//unique version
-	else{
+	else
+	{
 		//check heights for break, different ranks check their assigned range
-		for(int i = 0; i < samples.size(); i++){
-				
+		for(int i = 0; i < samples.size(); i++)
+		{
 			//array copy because Collatz() is destructive
-			for(int j = 0; j < numsize; j++){
+			for(int j = 0; j < numsize; j++)
+			{
 				tempBin[j] = samples[i].num64[j];
 			}
 
 			int currentSteps = CollatzCompare(tempBin, samples[i].size, ColSeq, ColSteps, dummyData, ColSeqSizes);
 
-			if(currentSteps != ColSteps){	
+			if(currentSteps != ColSteps)
+			{
 				//if(rank == 0) printf("First Trigger: x: %i, colSteps: %i\n", currentSteps, ColSteps);
 				dumpIndices.push(i);
 			}
@@ -972,47 +1082,62 @@ TableBuildInfo updateTable(unsigned long int** ColSeq, int* ColSeqSizes, int Col
 	}
 
 	//dump breaking samples
-	while(!dumpIndices.empty()){
+	while(!dumpIndices.empty())
+	{
 		delete[] samples[dumpIndices.top()].num64;
 		samples.erase(samples.begin() + dumpIndices.top());
 		dumpIndices.pop();
 	}
 
 // REINITIALIZE COLSEQ with (2^startPower + threshMultiplier(2^thresholdPower) + 1)
-	if (threshMultiplier > 0){
+	if (threshMultiplier > 0)
+	{
 		//make sure temp bin is reset
-		for(int i = 0; i < numsize; i++){
+		for(int i = 0; i < numsize; i++)
+		{
 			tempBin[i] = 0UL;
 		}
 
 		//build the sample
 		int tempSize = startPower/64;
 		tempBin[tempSize] = ((1UL << (startPower & 63)) | tempBin[startPower/64]);
-		for(int i = 0; i < threshMultiplier; i++){
-			for(int j = 0; j < tableThresholdOffsets.size(); j++){
-				for(int k = 0; k < tableThresholdOffsets[j].multiplier; k++){
+		for(int i = 0; i < threshMultiplier; i++)
+		{
+			for(int j = 0; j < tableThresholdOffsets.size(); j++)
+			{
+				for(int k = 0; k < tableThresholdOffsets[j].multiplier; k++)
+				{
 					tempSize = addPow2UL64(tempBin, tableThresholdOffsets[j].power, tempSize);
 				}
 			}
 		}
 		//add offsets
-		for(int i = 0; i < initialOffsets.size(); i++){
-			for(int j = 0; j < initialOffsets[i].multiplier; j++){
+		for(int i = 0; i < initialOffsets.size(); i++)
+		{
+			for(int j = 0; j < initialOffsets[i].multiplier; j++)
+			{
 				tempSize = addPow2UL64(tempBin, initialOffsets[i].power, tempSize);
 			}
 		}
 		tempSize = add64b1(tempBin, startPower/64);
 
 		//copy the sample for Collatz() because it eats things and doesnt give them back
-		for(int i = 0; i < tempSize + 1; i++){
+		for(int i = 0; i < tempSize + 1; i++)
+		{
 			tempTempBin[i] = tempBin[i];
 		}
-		
+
 		int currentSteps = CollatzCompare(tempTempBin, tempSize, ColSeq, ColSteps, dummyData, ColSeqSizes);
 		//abort if the initializing number breaks the streak
-		if( currentSteps == ColSteps){
+		if( currentSteps == ColSteps)
+		{
+//+++++ This just creates basic lookup table, but we need to add the entries below ColSteps... maybe...
+			CollatzStepsDouble(tempBin, tempSize, ColSeq, ColSeqSizes, ColSteps);
+//+++++
 			//printf("Second Trigger: x: %i, colSteps: %i\n", currentSteps, ColSteps);
-			CollatzSteps(tempBin, tempSize, ColSeq, ColSeqSizes);
+// ++++ code being swapped out start
+//			CollatzSteps(tempBin, tempSize, ColSeq, ColSeqSizes);
+// ++++ code being swapped out stop
 		}
 	}
 
@@ -1020,34 +1145,44 @@ TableBuildInfo updateTable(unsigned long int** ColSeq, int* ColSeqSizes, int Col
 
 	runningSample = samples[0].copy(numsize);
 
-	while (samples.size() > 1 && INDEX < ColSteps){
+	while (samples.size() > 1 && INDEX < ColSteps)
+	{
 
 		//collatz step for this INDEX
-		for(int i = 0; i < samples.size(); i++){
-			if(samples[i].num64[0] & 1UL){
+		for(int i = 0; i < samples.size(); i++)
+		{
+			if(samples[i].num64[0] & 1UL)
+			{
 				samples[i].size = mul64b3(samples[i].num64, samples[i].size);
 				samples[i].size = add64b1(samples[i].num64, samples[i].size);
 			}
-			else{
+			else
+			{
 				samples[i].size = div64b2(samples[i].num64, samples[i].size);
 			}
 		}
-		if(runningSample.num64[0] & 1UL){
+		if(runningSample.num64[0] & 1UL)
+		{
 			runningSample.size = mul64b3(runningSample.num64, runningSample.size);
 			runningSample.size = add64b1(runningSample.num64, runningSample.size);
 		}
-		else{
+		else
+		{
 			runningSample.size = div64b2(runningSample.num64, runningSample.size);
 		}
 
 		//sort the samples
-		sort(samples.begin(), samples.end(), 
+		sort(samples.begin(), samples.end(),
 			[](const Sample& a, const Sample& b){
 
 				if(a.size < b.size) return true;
 
-				if(a.size == b.size){
-					for(int i = 0; i < a.size + 1; i++){
+				if(a.size == b.size)
+				{
+					for(int i = 0; i < a.size + 1; i++)
+					{
+// BELOW IS THE PROPER ORDERING, BUT ITS SLOWER. ABOVE IS STILL AN ORDERING
+//					for(int i = a.size; i >= 0; i--){
 						if(a.num64[i] < b.num64[i]) return true;
 						else if(a.num64[i] > b.num64[i]) return false;
 					}
@@ -1058,35 +1193,39 @@ TableBuildInfo updateTable(unsigned long int** ColSeq, int* ColSeqSizes, int Col
 		);
 
 		//find the mode
-		for(int i = 1; i < samples.size(); i++){
-			if(samples[i-1].size == samples[i].size){
-				if(compare64(samples[i-1].num64, samples[i].num64, samples[i].size)){
-
+		for(int i = 1; i < samples.size(); i++)
+		{
+			if(samples[i-1].size == samples[i].size)
+			{
+				if(compare64(samples[i-1].num64, samples[i].num64, samples[i].size))
+				{
 					samples[i].frequency = samples[i-1].frequency + 1;
-
-					if (samples[i].frequency > maxFrequency){
+					if (samples[i].frequency > maxFrequency)
+					{
 						maxFrequency = samples[i].frequency;
 						modeIndex = i;
 					}
 				}
 			}
 		}
-		
+
 		//assign to table
-		if (maxFrequency > 1){
+		if (maxFrequency > 1)
+		{
 
 			delete[] runningSample.num64;
 			runningSample = samples[modeIndex].copy(numsize);
 
 			//printf("MODE FOUND FOR INDEX %i\n", INDEX);
-			for(int i = 0; i < numsize; i++){
+			for(int i = 0; i < numsize; i++)
+			{
 				//if(INDEX == 43) printf("%i\n", iter++);
 				ColSeq[INDEX][i] = samples[modeIndex].num64[i];
 			}
 			ColSeqSizes[INDEX] = samples[modeIndex].size;
-					
-			//update info in tbInfos
-			if (!firstIndexFound){
+
+			if (!firstIndexFound)
+			{
 				tbInfos.startIndex = INDEX;
 				firstIndexFound = true;
 			}
@@ -1094,34 +1233,87 @@ TableBuildInfo updateTable(unsigned long int** ColSeq, int* ColSeqSizes, int Col
 			tbInfos.totalReplaced++;
 
 			//delete moded samples except for 1
-			for(int i = 0; i < maxFrequency - 1; i++){
+//++++++ it seems like only the most frequent number is having its repeats deleted?
+			for(int i = 0; i < maxFrequency - 1; i++)
+			{
 				delete[] samples[modeIndex - i].num64;
 				samples.erase(samples.begin() + (modeIndex - i));
 			}
+/*
+	                //find the next mode
+			maxFrequency = 1;
+	                for(int i = 1; i < samples.size(); i++)
+        	        {
+                	        if(samples[i-1].size == samples[i].size)
+                        	{
+                                	if(compare64(samples[i-1].num64, samples[i].num64, samples[i].size))
+                                	{
+                                        	samples[i].frequency = samples[i-1].frequency + 1;
+                                        	if (samples[i].frequency > maxFrequency)
+                                        	{
+                                                	maxFrequency = samples[i].frequency;
+                                                	modeIndex = i;
+                                        	}
+                                	}
+                        	}
+                	}
+			int ii = samples.size()/2;
+			if (maxFrequency > 1)
+			{
+				ii = modeIndex;
+			}
+*/
 
+
+//++++ ADD THE RANDOM INSERT OF A SECOND SAMPLE AT INDEX+COLSTEPS HERE, just the middle entry really...
+			int ii = samples.size()/2;
+			for(int i = 0; i < numsize; i++)
+			{
+				//if(INDEX == 43) printf("%i\n", iter++);
+				ColSeq[ColSteps + INDEX][i] = samples[ii].num64[i];
+			}
+			ColSeqSizes[ColSteps + INDEX] = samples[ii].size;
+//++++
+
+			//update info in tbInfos
 			//reset frequencies
 			maxFrequency = 1;
-			for(int i = 0; i < samples.size(); i++){
+			for(int i = 0; i < samples.size(); i++)
+			{
 				samples[i].frequency = 1;
 			}
-		} else{
-			for(int i = 0; i < numsize; i++){
+		}
+		else
+		{
+			for(int i = 0; i < numsize; i++)
+			{
 				ColSeq[INDEX][i] = runningSample.num64[i];
 			}
 			ColSeqSizes[INDEX] = runningSample.size;
 			tbInfos.stopIndex = INDEX;
 			tbInfos.totalReplaced++;
+
+//++++ ADD THE RANDOM INSERT OF A SECOND SAMPLE AT INDEX+COLSTEPS HERE, just the middle entry really...
+			int ii = samples.size()/2;
+			for(int i = 0; i < numsize; i++)
+			{
+				//if(INDEX == 43) printf("%i\n", iter++);
+				ColSeq[ColSteps + INDEX][i] = samples[ii].num64[i];
+			}
+			ColSeqSizes[ColSteps + INDEX] = samples[ii].size;
+//++++
 		}
 
 		//go to next index in ColSeq
 		INDEX++;
 	}
 
-	delete[] runningSample.num64;
-
-	for(int i = 0; i < samples.size(); i++){
+	for(int i = 0; i < samples.size(); i++)
+	{
 		delete[] samples[i].num64;
 	}
+
+	delete[] runningSample.num64;
 
 	//record elapsed build time in tbInfos
 	tbInfos.generationTime = chrono::duration_cast<chrono::milliseconds>(chrono::high_resolution_clock::now() - startTime).count();
@@ -1130,32 +1322,30 @@ TableBuildInfo updateTable(unsigned long int** ColSeq, int* ColSeqSizes, int Col
 }
 
 
-/** 
+/**
  * generate Collatz sequence for binary number num64 of length size, return number of steps
- * 
+ *
  * @param num64 number to sequence !IS DESTRUCTIVE!
  * @param size size of the number
  * @returns Number of steps through the Collatz sequence
  * @warning changes the information in num64
 */
 int Collatz(unsigned long int num64[], int size){
+
 	int steps = 0; // just keep track of the number of steps!
 	while (! (( size == 0) && (num64[0] == 1UL)) ){
         steps++;
 
         // if number odd, perform 3x+1
-         if (num64[0] & 1UL){
-			
-            size = mul64b3(num64, size);
-			
-            size = add64b1(num64, size);
-             
-		}
+        if (num64[0] & 1UL)
+	{
+		size = mul64b3(num64, size);
+		size = add64b1(num64, size);
+	}
             // else the number is even, perform /2
-         else{
-			
-            size = div64b2(num64, size);
-
+        else
+	{
+            	size = div64b2(num64, size);
         }
 
     }
@@ -1165,7 +1355,7 @@ int Collatz(unsigned long int num64[], int size){
 
 /**
  * generate lookup table with one number, saving all numbers in the sequence as it goes, storing it in ColSeq and ColSeqSizes
- * 
+ *
  * @param num64 number to build the ColSeq table with !IS DESTRUCTIVE!
  * @param size size of the initial number
  * @param ColSeq 2D sequential array to store the subsequent num64s
@@ -1173,38 +1363,80 @@ int Collatz(unsigned long int num64[], int size){
  * @warning changes the information in num64
 */
 void CollatzSteps(unsigned long int num64[], int size, unsigned long int **ColSeq, int ColSeqSizes[]){
+
 	int steps = 0; // keep track of number of steps
 
-    while (! (( size == 0) && (num64[0] == 1UL)) ){
-        // if number odd, perform 3x+1
-        if (num64[0] & 1UL){
-            size = mul64b3(num64, size);
-            size = add64b1(num64, size);
-        }
-        // else the number is even, perform /2
-        else{
-            size = div64b2(num64, size);
+    	while (! (( size == 0) && (num64[0] == 1UL)) )
+	{
+	        // if number odd, perform 3x+1
+        	if (num64[0] & 1UL)
+		{
+            		size = mul64b3(num64, size);
+            		size = add64b1(num64, size);
+	        }
+        	// else the number is even, perform /2
+	        else
+		{
+        		size = div64b2(num64, size);
 		}
 
-        // copy the number over to array after each step in the process
-        // note we only go out to binsize, so the 2D array better be zeroed out first!
-        for (int j = 0; j <= size; j++){
-            ColSeq[steps][j] = num64[j];
-        }
-        //Here we add in the binsize of this number in the sequence.
-            ColSeqSizes[steps] = size;
-            steps ++;
-    }
+        	// copy the number over to array after each step in the process
+	        // note we only go out to binsize, so the 2D array better be zeroed out first!
+        	for (int j = 0; j <= size; j++)
+		{
+        	    	ColSeq[steps][j] = num64[j];
+	        }
+        	//Here we add in the binsize of this number in the sequence.
+	        ColSeqSizes[steps] = size;
+        	steps ++;
+    	}
 
 	//printf("CollatzSteps: %i\n", steps);
+	//	return steps;
+}
+void CollatzStepsDouble(unsigned long int num64[], int size, unsigned long int **ColSeq, int ColSeqSizes[], int ColSteps)
+{
 
+//+++++ IF WE WANT TO POPULATE THE LOWER HALF WITH THE SAME NUMBERS, WE WILL HAVE TO PASS COLSTEPS THROUGH AS WELL...
+
+	int steps = 0; // keep track of number of steps
+
+    	while (! (( size == 0) && (num64[0] == 1UL)) )
+	{
+	        // if number odd, perform 3x+1
+        	if (num64[0] & 1UL)
+		{
+            		size = mul64b3(num64, size);
+            		size = add64b1(num64, size);
+	        }
+        	// else the number is even, perform /2
+	        else
+		{
+        		size = div64b2(num64, size);
+		}
+
+        	// copy the number over to array after each step in the process
+	        // note we only go out to binsize, so the 2D array better be zeroed out first!
+        	for (int j = 0; j <= size; j++)
+		{
+        	    	ColSeq[steps][j] = num64[j];
+        	    	ColSeq[ColSteps + steps][j] = num64[j];
+
+	        }
+        	//Here we add in the binsize of this number in the sequence.
+	        ColSeqSizes[steps] = size;
+	        ColSeqSizes[ColSteps + steps] = size;
+        	steps ++;
+    	}
+
+	//printf("CollatzSteps: %i\n", steps);
 	//	return steps;
 }
 
 
 /**
  * generate Collatz sequence, stopping when it hits a number at same index in ColSeq array
- * 
+ *
  * @param num64 number to sequence and compare with the lookup table !IS DESTRUCTIVE!
  * @param sizeNum size of the num64
  * @param ColSeq lookup table
@@ -1213,8 +1445,9 @@ void CollatzSteps(unsigned long int num64[], int size, unsigned long int **ColSe
  * @param ColSeqSizes sizes of the numbers stored in the lookup table
  * @returns Number of steps through the Collatz sequence
 */
+
 int CollatzCompare(unsigned long int num64[], int sizeNum, unsigned long int **ColSeq, int ColSteps, int ColData[], int ColSeqSizes[]){
-	// ColData[0] holds number of steps to coalesce, [1] and [2] hold min and max coalescence values
+        // ColData[0] holds number of steps to coalesce, [1] and [2] hold min and max coalescence values
 
     int steps = 0; // the step count variable
     bool cv = false; // compare value between current step and base step
@@ -1247,7 +1480,7 @@ int CollatzCompare(unsigned long int num64[], int sizeNum, unsigned long int **C
             // put number of steps taken into 0th entry
             ColData[0] = steps;
             // then check we have another max/min number of steps
-        	if (steps > ColData[2]){
+                if (steps > ColData[2]){
                 ColData[2] = steps;
             }
             else if (steps < ColData[1]){
@@ -1273,38 +1506,187 @@ int CollatzCompare(unsigned long int num64[], int sizeNum, unsigned long int **C
 
 }
 
+
+/**
+ * generate Collatz sequence, stopping when it hits a number at same index in ColSeq array
+ *
+ * @param num64 number to sequence and compare with the lookup table !IS DESTRUCTIVE!
+ * @param sizeNum size of the num64
+ * @param ColSeq lookup table
+ * @param ColSteps size of the lookup table
+ * @param ColData size 3 array where [0] should equal ColSteps
+ * @param ColSeqSizes sizes of the numbers stored in the lookup table
+ * @param startIndex index where table replacement started
+ * @param stopIndex index of final table replacement
+ * @returns Number of steps through the Collatz sequence
+*/
+int CollatzCompareDouble(unsigned long int num64[], int sizeNum, unsigned long int **ColSeq, int ColSteps, int ColData[], int ColSeqSizes[], int startIndex, int stopIndex){
+	// ColData[0] holds number of steps to coalesce, [1] and [2] hold min and max coalescence values
+
+	int steps = 0; // the step count variable
+    	bool cv = false; // compare value between current step and base step
+
+    	while (! (( sizeNum == 0) && (num64[0] == 1UL)) )
+	{
+
+        	// if number odd, perform 3x+1
+        	if (num64[0] & 1UL)
+		{
+            		sizeNum = mul64b3(num64, sizeNum);
+		        sizeNum = add64b1(num64, sizeNum);
+        	}
+        	// else the number is even, perform /2
+        	else
+		{
+            		sizeNum = div64b2(num64, sizeNum);
+	        }
+        	steps++;
+
+	        //First we compare the current size of the number to the size of the original sequence's number
+        	if (sizeNum == ColSeqSizes[steps - 1])
+		{
+            		cv = compare64(num64, ColSeq[steps - 1], sizeNum);
+		        timesYesCompare++;
+        	}
+//++++++  IF CV IS STILL FALSE, WE NEED AN ELSE IF HERE AND WE HAVENT MATCHED YET
+//++++++  IF WE PASSED IN FIRST AND LAST INSERT, WE COULD JUMP INTO THIS ONLY IN THE SPECIFIED RANGE...
+
+        	else if ( (!cv) && (sizeNum == ColSeqSizes[steps - 1 + ColSteps]) && (steps >= startIndex) && (steps <= stopIndex))
+		{
+            		cv = compare64(num64, ColSeq[steps - 1 + ColSteps], sizeNum);
+		        timesYesCompare2++;
+//++++++ SHOULD WE HAVE A COUNTER FOR WHEN WE MATCH IN THE SECOND TABLE ENTRY?
+			if (cv)
+			{
+			        timesYesCompare2M++;
+			}
+        	}
+//++++
+        	else
+		{
+            		//here you will update your global variable since you didn't have to compare digit-by-digit
+            		timesNoCompare++;
+        	}
+
+	        // if the current number and that in ColSeq[steps] are the same, gather data and stop!
+        	if (cv)
+		{
+            		// put number of steps taken into 0th entry
+            		ColData[0] = steps;
+            		// then check we have another max/min number of steps
+        		if (steps > ColData[2])
+			{
+		                ColData[2] = steps;
+            		}
+            		else if (steps < ColData[1])
+			{
+                		ColData[1] = steps;
+            		}
+            		// so put the number of steps into ColSteps since we know current number will have
+	            	// same sequence length as one we are streak checking
+            		steps = ColSteps;
+            		break;
+        	}
+	        // if we have gotten all the way to number of steps for base number and  cv != 1, then we need to stop
+        	// as this is a break!
+        	else if (steps >= ColSteps)
+        	{
+            		steps = 0;
+            		break;
+        	}
+    	}
+
+     	//printf("CollatzCompareSteps: %i\n", steps);
+    	return steps;
+}
+
 /**
  * Multiply the num64 by 3.
  * @param num64 base 2^64 number to multiply
  * @param size size of the number
  * @returns size of number
 */
+int mul64b3(unsigned long int num64[], int size)
+//int mul3(ULL x[], int n)
+{
+        unsigned long int a = 0UL;
+        unsigned long int doubled = 0UL;
+        unsigned long int carry = 0UL;
+        unsigned long int carry1 = 0UL;
+        unsigned long int carry2 = 0UL;
+        unsigned long int carry3 = 0UL;
+        unsigned long int sum = 0UL;
+        unsigned long int sum2 = 0UL;
+
+        for (int i = 0; i <= size; i++)
+        {
+//                ULL a = x[i];
+
+        // compute 2a
+                doubled = (num64[i] << 1);
+                carry1 = (num64[i] >> 63);         // doubling overflowed
+
+        // (2a + a)
+                sum = doubled + num64[i];
+                carry2 = (sum < doubled);
+
+        // add previous carry
+                sum2 = sum + carry;
+                carry3 = (sum2 < sum);
+
+                num64[i] = sum2;
+
+                carry = carry1 + carry2 + carry3;
+        }
+
+        if (carry)
+        {
+                size ++;
+                num64[size] = carry;
+                return (size);
+        }
+        return (size);
+}
+
+
+
+
+
+/**
+ * Multiply the num64 by 3.
+ * @param num64 base 2^64 number to multiply
+ * @param size size of the number
+ * @returns size of number
+*/
+/*
 int mul64b3(unsigned long int num64[], int size){
 
-    unsigned long int currc; // for the current carry
-    unsigned long int nextc; // for the next carry
+    	unsigned long int currc; // for the current carry
+    	unsigned long int nextc; // for the next carry
 
 	// lets perform 3x+1 now, for 2^64 base, its easier to do 3x first, then go back and add 1.
 	currc = 0; // start with current carry = 0;
 	nextc = 0; // start with next carry = 0;
 
-	for(int i = 0; i <= size; i++){
+	for(int i = 0; i <= size; i++)
+	{
 		// remmeber the following constants:
 		// div3 = ulmax/3, so 2*div3 = 2*ulmax/3
 
 		// if num > 2/3*(2^64-1), then num >= 2/3*(2^64-1)+1, so
 		//  3*num + c >= 2*2^64-2+3 + c = 2*2^65+1 + c, so carry = 2 always
-		// note in worse case scenario, num = 2^64-1, and so 3*num + c = 3*2^64-3 + c, 
-		// and since c < 3, next carry = 2 
-		if (num64[i] > ULDIV3M2){
+		// note in worse case scenario, num = 2^64-1, and so 3*num + c = 3*2^64-3 + c,
+		// and since c < 3, next carry = 2
+		if (num64[i] > ULDIV3M2)
+		{
 
 			nextc = 2;
 			// num[i] = 3*num[i] + currc;
-			// this is bit version of 3x + carry 
+			// this is bit version of 3x + carry
 			num64[i] = (num64[i]<<1) + num64[i] + currc;
 
 		}
-		// what happens if num = 2/3*(2^64-1), 3*num + c =  2*2^64-2 + c 
+		// what happens if num = 2/3*(2^64-1), 3*num + c =  2*2^64-2 + c
 		// so next carry is 2 if c=2, but 1 if c=0 or c=1.
 		else if (num64[i] == ULDIV3M2)
 		{
@@ -1319,13 +1701,14 @@ int mul64b3(unsigned long int num64[], int size){
 				nextc = 1;
 			}
 			// num[i] = 3*num[i] + currc;
-			// this is bit version of 3x + carry 
+			// this is bit version of 3x + carry
 			num64[i] = (num64[i]<<1) + num64[i] + currc;
 
 		}
 		// now if num > 1/3*(2^64-1), then num >= 1/3*(2^64-1)+1
 		// 3*num + c >= 2^64-1+3 + c = 2^64+2 + c,  and next carry is 1
-		else if (num64[i] > ULDIV3){
+		else if (num64[i] > ULDIV3)
+		{
 
 			nextc = 1;
 			// num[i] = 3*num[i] + currc;
@@ -1334,18 +1717,20 @@ int mul64b3(unsigned long int num64[], int size){
 
 		}
 		// so what if num = 1/3*(2^64-1)?  then 3*num + c = 2^64-1 + c, so if c > 0 we have a carry!
-        else if (num64[i] == ULDIV3){
-            if (currc > 0){
+        	else if (num64[i] == ULDIV3)
+		{
+            		if (currc > 0)
+			{
 				nextc = 1;
-            }
-            else{
+            		}
+            		else
+			{
 				nextc = 0;
-            }
+            		}
 			// num[i] = 3*num[i] + currc;
 			// this is bit version of 3x + carry 
 			num64[i] = (num64[i]<<1) + num64[i] + currc;
-
-    	}
+    		}
 
 
 		// if num < div3, num <= 1/3*(2^64-1)-1, and so 3*num +c <= 2^64-1-3 + c = 2^64-4 + c < 2^64-1 always
@@ -1361,18 +1746,19 @@ int mul64b3(unsigned long int num64[], int size){
 		currc = nextc;
 		// theoreticall we do not have to set nextc = 0 since it always gets adjusted above....
 		nextc = 0;
-
 	}
 
 	// now let's check to see if we need to add the carry to the next entry, in which case
 	// we incremment the size of the number by 1
-	if (currc > 0){
-
+	if (currc > 0)
+	{
 		size ++;
 		num64[size] = currc;
 	}
 	return (size);
 }
+*/
+
 
 /**
  * Divide num64 by 2.
@@ -1380,6 +1766,37 @@ int mul64b3(unsigned long int num64[], int size){
  * @param size size of number
  * @returns size of number
 */
+//int div2(ULL x[], int n)
+int div64b2(unsigned long int num64[], int size)
+{
+        unsigned long int carry = 0UL;
+        unsigned long int next = 0UL;
+
+        for (int i = size; i >= 0; i--)
+        {
+                next = num64[i];
+                num64[i] = (next >> 1) | (carry << 63);
+                carry = next & 1UL;
+
+//                if (i == 0) break;
+        }
+        if (num64[size] != 0UL)
+        {
+                return (size);
+        }
+        return (--size);
+}
+
+
+
+
+/**
+ * Divide num64 by 2.
+ * @param num64 number to divide
+ * @param size size of number
+ * @returns size of number
+*/
+/*
 int div64b2(unsigned long int num64[], int size){
 
 	// we start with the largest entry first, to determine if zeros out
@@ -1387,7 +1804,8 @@ int div64b2(unsigned long int num64[], int size){
 
 	// other odd number, will have a remainder to carry over to next lowest entry
 
-	for (int i = size; i>=0; i--){
+	for (int i = size; i>=0; i--)
+	{
 		// if number is odd, we have to add some 2^63 to the next entry's result due to the carry (drop)
 		if (num64[i] & 1UL)
 		{
@@ -1411,6 +1829,7 @@ int div64b2(unsigned long int num64[], int size){
 	}
 
 }
+*/
 
 /**
  * checks if two num64s are the same or not
@@ -1421,6 +1840,7 @@ int div64b2(unsigned long int num64[], int size){
  * @returns boolean of equality
 */
 bool compare64(unsigned long int num0[], unsigned long int num1[], int size){
+
     int i = 0;
 
     while (i <= size)
@@ -1444,14 +1864,15 @@ bool compare64(unsigned long int num0[], unsigned long int num1[], int size){
 */
 int addPow2UL64(unsigned long int num64[], int valExp, int size){
 
-    int start = valExp/64; //where to add the power of 2
-    int entrybitshift = (valExp & 63); //remainder to put in entries position of 2^64
+    	int start = valExp/64; //where to add the power of 2
+    	int entrybitshift = (valExp & 63); //remainder to put in entries position of 2^64
 
 	unsigned long int val = 0;
 	val =  ((1UL << entrybitshift) | val);
 	int carry = 0;
 	// we start at entry 0 and keep going until we have no more carry
-	if (num64[start] > ULONG_MAX - val){
+	if (num64[start] > ULONG_MAX - val)
+	{
 		carry = 1;
 	}
 	num64[start] = num64[start] + val;
@@ -1563,7 +1984,7 @@ void print64(unsigned long int num[], int size)
 
 /**
  * Prints info from table.
- * 
+ *
  * @param tbInfos TableBuildInfo struct from table build.
 */
 void printTableInfo(TableBuildInfo tbInfos){
@@ -1583,7 +2004,7 @@ void printTableInfo(TableBuildInfo tbInfos){
 
 /**
  * Parses an input argument in the form x(y) with x being a multiplier and y being a power of 2
- * 
+ *
  * @param carr character array from the arguments
  * @returns the multiplier and power of the offset
 */
@@ -1594,33 +2015,41 @@ Offset parseOffset(string carr){
 	char* powC = nullptr;
 	Offset offset;
 
-	for(int i = 0; i < carr.length(); i++){
-		if(carr.at(i)=='['){
+	for(int i = 0; i < carr.length(); i++)
+	{
+		if(carr.at(i)=='[')
+		{
 			firstBrace = i;
 		}
-		if(carr.at(i)==']'){
+		if(carr.at(i)==']')
+		{
 			lastBrace = i;
 		}
 	}
 
-	if(firstBrace != -1 && lastBrace != -1){
+	if(firstBrace != -1 && lastBrace != -1)
+	{
 		multC = new char[firstBrace];
 		powC = new char[lastBrace - (firstBrace + 1)];
 
-		for(int i = 0; i < firstBrace; i++){
+		for(int i = 0; i < firstBrace; i++)
+		{
 			multC[i] = carr.at(i);
 		}
-		for(int i = 0; i < lastBrace - (firstBrace + 1); i++){
+		for(int i = 0; i < lastBrace - (firstBrace + 1); i++)
+		{
 			powC[i] = carr.at(i);
 		}
-		
+
 		offset = {atoi(multC), atoi(powC)};
 	}
-	else if(firstBrace != -1 || lastBrace != -1){
+	else if(firstBrace != -1 || lastBrace != -1)
+	{
 		cerr << "missing a brace on an offset, unable to parse " << carr << "\n";
 		offset = {0,-1};
 	}
-	else{
+	else
+	{
 		offset = {1, atoi(carr.c_str())};
 	}
 
@@ -1632,7 +2061,7 @@ Offset parseOffset(string carr){
 
 /**
  * binary multiply by 3, add 1, divide by 2
- * 
+ *
  * @param num binnumber to perform the operation to
  * @param size size of the binnumber
  * @param lsd least significant digit of the binnumber
@@ -1719,7 +2148,7 @@ int digitsum(int num[], int mod[], int size)
 
 /**
  * binary multiply by 3 and add 1 and return the new binary number size
- * 
+ *
  * @param num binnumber to mult by 3 and add 1 to
  * @param size size of the binnumber
  * @returns new size of the binnumber after the operation
