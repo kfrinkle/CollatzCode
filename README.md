@@ -15,4 +15,4 @@ v7_jumbler -- implemented a runningSample to improve coalesence, Jumblerv2 is cu
 
 v8_BloomFilter -- Bloom Filter attempts.  Base 2 is currently working, base 2^64 is still experiencing some random issues, including missed streak breaks.
 
-CUDA -- CUDA implementation of the program, currently not as performant as the CPU-cluster based approach
+CUDA -- Current CUDA version can be found here: https://github.com/FLGZ-dev/CollatzCUDA
