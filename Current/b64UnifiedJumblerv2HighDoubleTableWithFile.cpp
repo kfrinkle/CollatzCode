@@ -95,7 +95,6 @@ int CollatzCompareDouble(unsigned long int num64[], int sizeNum, unsigned long i
 TableBuildInfo updateTable(unsigned long int **ColSeq, int *ColSeqSizes, int ColSteps, int numsize, int startPower, vector<Offset<int>> &initialOffsets, vector<Offset<int>> &tableThresholdOffsets, vector<Offset<unsigned long int>> &ulOffsets, int threshMultiplier, int amountOfSamples, MPI_Comm comm); // self explanatory
 Offset<int> parseOffset(string &carr);
 Offset<unsigned long int> parseULOffset(string &carr);
-unsigned long int atoul(const char *str);
 bool compare64(unsigned long int num0[], unsigned long int num1[], int size); // checks if two num64s are equal
 int mul64b3(unsigned long int num64[], int size);							  // multiply by 3 in base 2^64, returning new size of number
 int addUL64(unsigned long int num64[], unsigned long int val, int size);	  // add single ULL in base 2^64 to array, returning new size of number
