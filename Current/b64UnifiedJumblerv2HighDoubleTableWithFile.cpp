@@ -651,7 +651,7 @@ int main(int argc, char *argv[])
 			{
 				// cerr << "[" << processorName << "] Rank " << rank << ": Table Build Initiated." << "\n";
 				thresholdsReached += (int)num64hold[sizeNum + extra - 1];
-				tbInfos = updateTable(ColSeq, ColSeqSizes, ColSteps, num64Size, expon, initialOffsets, tableThresholdOffsets, ulOffsets, 0, tableSampleAmount, workCommunicator);
+				tbInfos = updateTable(ColSeq, ColSeqSizes, ColSteps, num64Size, expon, initialOffsets, tableThresholdOffsets, ulOffsets, thresholdsReached, tableSampleAmount, workCommunicator);
 				// cerr << "[" << processorName << "] Rank " << rank << ": Table Build Finalized." << "\n";
 
 				if (rank == 1)
