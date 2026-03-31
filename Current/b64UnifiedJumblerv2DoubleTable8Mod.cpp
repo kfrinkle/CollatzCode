@@ -32,6 +32,8 @@
 #include <stack>
 #include <queue>
 #include <random>
+#include <sstream>
+#include <fstream>
 
 using namespace std;
 
@@ -283,10 +285,21 @@ int main(int argc, char *argv[])
 	}
 
 	// init powa2
+	unsigned long int powa2UL = 1UL;
 	for (int i = 0; i < powa; i++)
 	{
 		powa2 = powa2 * 2;
+		powa2UL = powa2UL*2UL;
 	}
+
+//This is the needed to init the two TickerBox Arrays
+        int doubleChunk = powa2 * 2;
+
+        //We need two copies of the TickerBox array, One for UL to pass to the function and a int version for the tracki$
+//        unsigned long int tickerBoxUL[doubleChunk] = {0UL}; //The UL version of the TickerBox
+        unsigned long int* tickerBoxUL = new unsigned long int[doubleChunk] ();
+//        int tickerBoxInt[doubleChunk] = {0}; //The int version of the TickerBox
+        int* tickerBoxInt = new int[doubleChunk] ();
 
 	// init num64s
 	//  init num64s
@@ -316,6 +329,34 @@ int main(int argc, char *argv[])
 	// init ColSteps
 	ColSteps = Collatz(num64, sizeNum);
 	ColData[1] = ColSteps; // used by CollatzCompare()
+
+        // init TickerBoxs
+        //First go through the TickerBoxes and set all the entries to 1
+        //Next go through and 0 out all the entries the work loop will skip doing
+        //Finally go through the back of the array and calc the jumps needed
+        string filename;
+//      ofstream tickertapeOG;
+        ifstream tickertapeRD;
+
+        if(SKIPEVENS == true)
+        {
+                filename = "/home/kwilliams/ttSEp16.bin";
+//              filename = "/Users/kevinwilliams/Documents/Binary/ttSEp11.bin";
+        }
+	else
+        {
+                filename = "/home/kwilliams/ttp16.bin";
+//              filename = "/Users/kevinwilliams/Documents/Binary/ttOGp11.bin";
+        }
+
+        tickertapeRD.open(filename.c_str(), ios::in | ios::binary);
+        tickertapeRD.read((char *) tickerBoxInt, 4*doubleChunk);
+        tickertapeRD.close();
+
+       for(int i = 0; i < doubleChunk; i++)
+       {
+                tickerBoxUL[i] = static_cast<unsigned long>(tickerBoxInt[i]);
+       }
 
 	// WORKER VARIABLE INIT
 
@@ -593,6 +634,7 @@ int main(int argc, char *argv[])
 		iter = 0; // keeps track of the chunks this node has processed
 		int thresholdsReached = 0;
 		int i3 = 0;
+		int currentEntry = 0;
 
 		// work loop, will terminate when stop signal is received : num64Hold[num64Size-1] = 1;
 		do
@@ -600,7 +642,7 @@ int main(int argc, char *argv[])
 			i3 = 0;
 			MPI_Recv(num64hold, num64Size, MPI_UNSIGNED_LONG, 0, 0, MPI_COMM_WORLD, &status);
 			sizeNum = (int)num64hold[num64Size - 3];
-
+/*
 			// offset by 1 check for skipevens case...
 			if (SKIPEVENS && (num64hold[0] & 1UL) == 0UL)
 			{
@@ -608,6 +650,21 @@ int main(int argc, char *argv[])
 				i3 = 1;
 				cout << "bingo!!!!!" << endl;
 			}
+*/
+
+//currentEntry should be 1
+                        currentEntry = static_cast<int>(num64hold[0] % powa2UL);
+//                      currentEntry = (static_cast<int>(num64hold[0]) % (doubleChunk / 2));
+//                        if(currentEntry != 1) cout << "Node " << processorName <<  " -- Rank " << rank <<" reporting m$
+
+//This moves currentEntry to the first non-zero entry
+                        while(tickerBoxInt[currentEntry] == 0)
+                        {
+                                currentEntry++;
+                                i3++;
+                                sizeNum = add64b1(num64hold, sizeNum);
+                        }
+
 
 			auto startTimer = chrono::high_resolution_clock::now(); // start timer
 			int streakChunk = 0;									// keep track of steps through the assigned range
@@ -650,7 +707,7 @@ int main(int argc, char *argv[])
 					//++++ swap out CollatzSteps with the double
 					steps = CollatzCompareDouble(num64, sizeNum, ColSeq, ColSteps, ColData, ColSeqSizes, tbInfos.startIndex, tbInfos.stopIndex);
 					//++++
-
+					ii++;
 					// ++++ code being replaced start
 					//					steps = CollatzCompare(num64, sizeNum, ColSeq, ColSteps, ColData, ColSeqSizes);
 					// ++++ code being replaced stop
@@ -663,7 +720,6 @@ int main(int argc, char *argv[])
 					if (steps == ColSteps)
 					{
 						streakChunk++;
-						ii++;
 					}
 					// else we print out the break info! Keep checking the .out file for this statement!
 					else
@@ -682,6 +738,7 @@ int main(int argc, char *argv[])
 					//					{
 
 					// ok, so number has been processed... time to determine next number
+/*
 					if (SKIPEVENS)
 					{
 						if ((num64hold[0] & 7UL) == 3UL)
@@ -717,6 +774,21 @@ int main(int argc, char *argv[])
 					}
 					//					}
 					// else it is the last number worked on, so store that in lastnumber!
+*/
+//++++++++++++    TICKER BOX STUFF
+                                        sizeNum = addUL64(num64hold, tickerBoxUL[currentEntry], sizeNum);
+                                        streakChunk =  streakChunk + tickerBoxInt[currentEntry] - 1;
+                                        i = i + tickerBoxInt[currentEntry] - 1;
+                                        currentEntry = currentEntry + tickerBoxInt[currentEntry];
+
+                                        for (int j = 0; j < sizeNum + extra; j++)
+                                        {
+                                                num64[j] = num64hold[j];
+                                        }
+//                                      }
+                                        // else it is the last number worked on, so store that in lastnumber!
+
+
 				}
 
 				// stop timer and record time elapsed
