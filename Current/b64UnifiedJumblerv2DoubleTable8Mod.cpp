@@ -34,6 +34,7 @@
 #include <random>
 #include <sstream>
 #include <fstream>
+#include <cstring>
 
 using namespace std;
 
@@ -337,19 +338,32 @@ int main(int argc, char *argv[])
         string filename;
 //      ofstream tickertapeOG;
         ifstream tickertapeRD;
+	char f[50] = {"bin/"};
+        char fse[10] = {"ttSEp"};
+        char nse[10] = {"ttp"};
+        char p[10];
+        std::snprintf(p, size_t(powa), "%d", powa);
+        char b[10] = {".bin"};
 
         if(SKIPEVENS == true)
         {
-                filename = "/home/kwilliams/ttSEp16.bin";
+		strcat(f, fse);
+                strcat(f, p);
+                strcat(f, b);
+//                filename = "/home/kwilliams/ttSEp16.bin";
 //              filename = "/Users/kevinwilliams/Documents/Binary/ttSEp11.bin";
         }
 	else
         {
-                filename = "/home/kwilliams/ttp16.bin";
+		strcat(f, nse);
+                strcat(f, p);
+                strcat(f, b);
+//                filename = "/home/kwilliams/ttp16.bin";
 //              filename = "/Users/kevinwilliams/Documents/Binary/ttOGp11.bin";
         }
 
-        tickertapeRD.open(filename.c_str(), ios::in | ios::binary);
+//        tickertapeRD.open(filename.c_str(), ios::in | ios::binary);
+	tickertapeRD.open(f, ios::in | ios::binary);
         tickertapeRD.read((char *) tickerBoxInt, 4*doubleChunk);
         tickertapeRD.close();
 
