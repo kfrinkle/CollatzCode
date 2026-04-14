@@ -1017,8 +1017,8 @@ int main(int argc, char *argv[])
  * It will first initialise the samples along the range picking randomly in equal clamped sets.
  * It will then parallely check the sample heights to ensure no breaks.
  * Then it will initialize the table 1 integer after the threshold.
- * If a break is found it will abort, returning all 0s in the return TableBuildInfo.
- * Finally it will step through the collatz sequence on each sample, recording the first highest mode in the lookup table.
+ * If a break is found during height checkinh, that sample will be discarded
+ * Finally it will step through the collatz sequence on each sample, recording the first most frequent mode in the lookup table.
  *
  * @param ColSeq the 2D array lookup table
  * @param ColSeqSizes the array of the sizes
@@ -1028,12 +1028,13 @@ int main(int argc, char *argv[])
  * @param initialOffsets initial offsets
  * @param tableThresholdOffsets offsets for the domain of the table build
  * @param threshMultiplier which range of samples you are at
+ * @param ulOffsets unsigned long int offsets for the domain of the table build
  * @param amountOfSamples number of integers to sample for the table
  * @param comm the comminicator for the work group using MPI_Split, rank 0 should never enter this function
  * @returns TableBuildInfo struct, will be all 0s if the table build fails
  */
 TableBuildInfo updateTable(unsigned long int **ColSeq, int *ColSeqSizes, int ColSteps, int numsize, int startPower, vector<Offset<int>> &initialOffsets, vector<Offset<int>> &tableThresholdOffsets, vector<Offset<unsigned long int>> &ulOffsets, int threshMultiplier, int amountOfSamples, MPI_Comm comm)
-{
+{ 
 	// STRUCT
 	struct Sample
 	{
